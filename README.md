@@ -142,3 +142,11 @@ Every `available` claim cites `evidence_ids`; missing data is `not_available`/`b
 - Models/APIs: none (no LLM, no paid API). Sources: Brønnøysundregistrene open data (NLOD 2.0) and company-owned websites (robots.txt respected, public-URL guard).
 - Expected third-party cost: USD 0. Measured: ~1,000 requests and ~5 min per 100 companies.
 - 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json` (run smoke-002, contract format, 106 tests pass).
+
+## Profile viewer (UX)
+Every run also writes `<outdir>/site/index.html`: one static page (no server, no network) built from the envelopes by `scripts/build_site.py`.
+It has a searchable, filterable company list, a coverage summary for the batch, side-by-side comparison of up to four companies, and one
+profile per company (`#/<organisation number>`) with a plain-language summary, what is unknown and why, what changed since the previous run,
+annual accounts, roles, sub-units, group structure, dated public activity, and a table of every fact with its source link, retrieval date and
+SHA-256. Works on desktop and phone and follows the system light/dark setting. The page for the committed smoke test is `smoke/site/index.html`.
+Rebuild by hand: `python scripts/build_site.py --envelopes out/envelopes.jsonl --output out/site/index.html`.

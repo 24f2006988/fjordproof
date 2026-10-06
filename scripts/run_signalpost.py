@@ -107,6 +107,14 @@ def main() -> None:
     write_jsonl(profiles_path, profiles)
     write_jsonl(env_path, envelopes)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:  # profile viewer for people; never allowed to affect the graded envelopes or exit code
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from build_site import build as build_site
+        site = out / "site" / "index.html"
+        site.parent.mkdir(parents=True, exist_ok=True)
+        site.write_text(build_site(envelopes), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        print(f"profile viewer not built: {type(exc).__name__}", file=sys.stderr)
     states = {}
     for e in envelopes:
         for m, v in e["modules"].items():
