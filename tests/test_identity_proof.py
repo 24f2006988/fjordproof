@@ -50,6 +50,65 @@ class HardProofTests(unittest.TestCase):
             proof, _ = footprint_plus.hard_identity_proof(profile, {"source_url": "https://example.no/"})
         self.assertIn("registered street address and postcode", proof or "")
 
+    def test_short_street_line_and_postcode_is_not_proof(self):
+        profile = {
+            "organisation_number": "985589003",
+            "name": "TEST AS",
+            "evidence": {"registry_live": {"value": {"business_address": {"adresse": ["Vn 1"], "postnummer": "0182"}}}},
+        }
+        pages = {"https://example.no/": "Annen bedrift, Vn 1, 0182 Oslo"}
+        with mock.patch.object(footprint_plus, "_get", lambda url, *a, **k: ((pages.get(url).encode() if pages.get(url) else None), url)):
+            proof, _ = footprint_plus.hard_identity_proof(profile, {"source_url": "https://example.no/"})
+        self.assertIsNone(proof)
+
+    def test_contact_page_tel_link_is_url_decoded(self):
+        profile = {"organisation_number": "985589003", "name": "TEST AS", "evidence": {}}
+        pages = {
+            "https://example.no/": '<a href="/kontakt">Kontakt</a>',
+            "https://example.no/kontakt": '<a href="tel:%20+4792566136">Ring</a><a href="mailto:post@example.no">Mail</a>',
+        }
+        with mock.patch.object(footprint_plus, "_get", lambda url, *a, **k: ((pages.get(url).encode() if pages.get(url) else None), url)):
+            ev, _ = footprint_plus.extract_footprint(profile, {"status": "available", "source_url": "https://example.no/", "value": {"identity_assessment": {"publishable": True}}})
+        contact = ev["value"]["contact"]
+        self.assertEqual(contact["phone"], "+4792566136")
+        self.assertEqual(contact["email"], "post@example.no")
+
+    def _footprint(self, pages):
+        profile = {"organisation_number": "985589003", "name": "TEST AS", "evidence": {}}
+        site = {"status": "available", "source_url": "https://example.no/", "value": {"identity_assessment": {"publishable": True}}}
+        with mock.patch.object(footprint_plus, "_get", lambda url, *a, **k: ((pages.get(url).encode() if pages.get(url) else None), url)):
+            return footprint_plus.extract_footprint(profile, site)[0]["value"]
+
+    def test_homepage_tel_link_is_decoded_and_text_phone_is_normalised(self):
+        v = self._footprint({"https://example.no/": '<a href="tel:%20+47 92 56 61 36">x</a>'})
+        self.assertEqual(v["contact"]["phone"], "+4792566136")
+        v = self._footprint({"https://example.no/": "<p>Ring oss: 92 56 61 36</p><p>Org.nr 985 589 003</p>"})
+        self.assertEqual(v["contact"]["phone"], "+4792566136")
+        v = self._footprint({"https://example.no/": "<p>Org.nr 985 589 003 Faks 12345678</p>"})
+        self.assertNotIn("phone", v["contact"])
+
+    def test_sitemap_gives_careers_news_and_dated_posts_from_own_host_only(self):
+        sitemap = (
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            '<url><loc>https://example.no/karriere/</loc></url>'
+            '<url><loc>https://example.no/nyheter/ny-kunde-i-oslo</loc><lastmod>2026-09-01T10:00:00+00:00</lastmod></url>'
+            '<url><loc>https://other.no/nyheter/skal-ikke-med</loc><lastmod>2026-09-02</lastmod></url></urlset>'
+        )
+        v = self._footprint({"https://example.no/": "<p>Hei</p>", "https://example.no/sitemap.xml": sitemap})
+        self.assertEqual(v["careers_urls"], ["https://example.no/karriere/"])
+        self.assertEqual([d["url"] for d in v["dated_activity"]], ["https://example.no/nyheter/ny-kunde-i-oslo"])
+        self.assertEqual(v["dated_activity"][0]["date"], "2026-09-01")
+        self.assertEqual(v["dated_activity"][0]["date_kind"], "sitemap_lastmod")
+
+    def test_wordpress_rest_posts_used_when_no_feed(self):
+        posts = '[{"date": "2026-08-15T09:00:00", "link": "https://example.no/hei/", "title": {"rendered": "Hei &amp; velkommen"}}]'
+        v = self._footprint({
+            "https://example.no/": '<link rel="https://api.w.org/" href="https://example.no/wp-json/">',
+            "https://example.no/wp-json/wp/v2/posts?per_page=5&_fields=date,link,title": posts,
+        })
+        self.assertEqual(v["dated_activity"][0]["title"], "Hei & velkommen")
+        self.assertEqual(v["dated_activity"][0]["date"], "2026-08-15")
+
     def test_phone_or_leader_alone_is_not_proof(self):
         profile = {
             "organisation_number": "985589003",
