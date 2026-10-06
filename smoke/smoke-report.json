@@ -1,0 +1,44 @@
+{
+  "run_id": "linux-001",
+  "started_at": "2026-10-06T05:44:33.359452Z",
+  "completed_at": "2026-10-06T05:49:29.379865Z",
+  "expected_count": 100,
+  "emitted_envelopes": 100,
+  "resumed_profiles": 0,
+  "profiles_fetched_this_run": 100,
+  "modules": [
+    "registry",
+    "accounting_obligation",
+    "registry_live",
+    "financials",
+    "roles",
+    "group",
+    "locations",
+    "website",
+    "external_footprint"
+  ],
+  "registry": {
+    "registry_snapshot_sha256": "8483831efe73d873460e4c6765c98f46a1937a59b763c074ea32a6d2e657bc70",
+    "registry_rows_scanned": 1172258,
+    "requested": 100,
+    "selected": 100
+  },
+  "operations": {
+    "requests": 1024,
+    "bytes": 2623073,
+    "p50_ms": 1379,
+    "p95_ms": 1937,
+    "third_party_cost_usd": 0
+  },
+  "validation": {
+    "passed": true,
+    "checks": {
+      "exact_expected_count": true,
+      "unique_organisation_numbers": true,
+      "all_entity_states_terminal": true,
+      "all_module_states_terminal": true,
+      "zero_silent_drops": true
+    },
+    "invalid_states": []
+  }
+}

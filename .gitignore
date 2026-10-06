@@ -1,0 +1,8 @@
+work/
+out/
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+*.csv
+*.gz
