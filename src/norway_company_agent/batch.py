@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable
 
 from .evidence import evidence, utc_now
-from .official import accounting_obligation_assessment
+from .http import fetch_json
+from .official import BRREG_ENTITY, accounting_obligation_assessment
+from .sampling import normalize_row
 from .sampling import iter_bulk
 
 
@@ -55,43 +58,89 @@ def read_organisation_numbers(path: str | Path) -> list[str]:
     return [record["organisation_number"] for record in read_organisation_inputs(path)]
 
 
-def profiles_from_bulk(path: str | Path, organisation_numbers: Iterable[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _flatten(prefix: str, value: Any, out: dict[str, str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _flatten(f"{prefix}.{key}" if prefix else key, item, out)
+    elif value is not None and not isinstance(value, list):
+        out[prefix] = str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def _live_registry_profile(org: str) -> dict[str, Any]:
+    """Fallback when the org is not in a bulk snapshot (or no snapshot is supplied): one live Brreg lookup."""
+    url = BRREG_ENTITY.format(org=org)
+    result = fetch_json(url)
+    if result.status == 200 and isinstance(result.body, dict):
+        row: dict[str, str] = {}
+        _flatten("", result.body, row)
+        row.setdefault("organisasjonsnummer", org)
+        profile = normalize_row(row)
+        raw = profile.pop("raw", {})
+        status, note, value = "available", None, raw
+    else:
+        profile = normalize_row({"organisasjonsnummer": org})
+        profile.pop("raw", None)
+        status = "not_found" if result.status in {404, 410} else "source_error"
+        note, value = result.error or f"HTTP {result.status}", None
+    profile["organisation_number"] = org
+    profile["evidence"] = {
+        "registry": evidence(
+            "registry", status, "official_registry_live", url,
+            value=value, note=note, retrieved_at=result.retrieved_at, content_sha256=result.content_sha256, source_row_key=org,
+        ),
+    }
+    profile["evidence"]["accounting_obligation"] = accounting_obligation_assessment(profile)
+    return profile
+
+
+def profiles_from_bulk(path: str | Path | None, organisation_numbers: Iterable[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Identity rows from the bulk snapshot; any organisation missing from it (or all, with no readable snapshot) is looked up live."""
     requested = list(organisation_numbers)
     wanted = set(requested)
-    snapshot_sha256 = hashlib.sha256(Path(path).read_bytes()).hexdigest()
-    retrieved_at = utc_now()
     found: dict[str, dict[str, Any]] = {}
     scanned = 0
-    for profile in iter_bulk(path):
-        scanned += 1
-        org = profile["organisation_number"]
-        if org not in wanted:
-            continue
-        raw = profile.pop("raw", {})
-        profile["evidence"] = {
-            "registry": evidence(
-                "registry",
-                "available",
-                "official_registry_bulk",
-                "https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv",
-                value=raw,
-                retrieved_at=retrieved_at,
-                content_sha256=snapshot_sha256,
-                source_row_key=org,
-            ),
-            "accounting_obligation": accounting_obligation_assessment(profile),
-        }
-        found[org] = profile
-        if len(found) == len(wanted):
-            break
+    snapshot_sha256 = None
+    bulk_error = None
+    if path and Path(path).is_file():
+        try:
+            snapshot_sha256 = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            retrieved_at = utc_now()
+            for profile in iter_bulk(path):
+                scanned += 1
+                org = profile["organisation_number"]
+                if org not in wanted or org in found:
+                    continue
+                raw = profile.pop("raw", {})
+                profile["evidence"] = {
+                    "registry": evidence(
+                        "registry",
+                        "available",
+                        "official_registry_bulk",
+                        "https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv",
+                        value=raw,
+                        retrieved_at=retrieved_at,
+                        content_sha256=snapshot_sha256,
+                        source_row_key=org,
+                    ),
+                    "accounting_obligation": accounting_obligation_assessment(profile),
+                }
+                found[org] = profile
+                if len(found) == len(wanted):
+                    break
+        except (OSError, EOFError, UnicodeError, csv.Error) as exc:
+            bulk_error = type(exc).__name__
+    else:
+        bulk_error = "bulk snapshot not supplied" if not path else "bulk snapshot file not found"
     missing = [org for org in requested if org not in found]
-    if missing:
-        raise ValueError(f"Organisation numbers absent from registry snapshot: {missing[:10]}")
+    for org in missing:
+        found[org] = _live_registry_profile(org)
     return [found[org] for org in requested], {
         "registry_snapshot_sha256": snapshot_sha256,
         "registry_rows_scanned": scanned,
         "requested": len(requested),
-        "selected": len(found),
+        "selected": len(requested) - len(missing),
+        "live_lookups": len(missing),
+        "bulk_note": bulk_error,
     }
 
 

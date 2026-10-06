@@ -29,7 +29,7 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluator-owned Signalpost batch contract")
     parser.add_argument("--organisations", required=True, help="JSON, JSONL, or text organisation-number list")
-    parser.add_argument("--bulk", required=True, help="Frozen Brreg entity snapshot")
+    parser.add_argument("--bulk", default=None, help="Frozen Brreg entity snapshot (optional; missing orgs are looked up live)")
     parser.add_argument("--output", required=True, help="Terminal envelope JSONL")
     parser.add_argument("--profiles-output", required=True)
     parser.add_argument("--report", required=True)
@@ -54,7 +54,7 @@ def main() -> None:
                 profile[key] = annotations[profile["organisation_number"]][key]
     requested_modules = [item.strip() for item in args.modules.split(",") if item.strip()]
     fetch_modules = set(requested_modules) - {"registry", "accounting_obligation", "website"}
-    operations = {"requests": 0, "bytes": 0, "latencies_ms": []}
+    operations = {"requests": registry_metadata.get("live_lookups", 0), "bytes": 0, "latencies_ms": []}
 
     def enrich(profile: dict) -> tuple[dict, dict]:
         records, metrics = fetch_official_modules(profile["organisation_number"], fetch_modules)

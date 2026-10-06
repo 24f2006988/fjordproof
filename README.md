@@ -138,7 +138,7 @@ Each envelope keeps the starter's native fields (`state`, `modules`, `profile`) 
 Every `available` claim cites `evidence_ids`; missing data is `not_available`/`blocked`/`failed`, never zero-filled.
 
 ### Submission facts
-- Run command: `uv sync && uv run python scripts/run_signalpost.py --organisations <batch.jsonl> --bulk brreg-enheter.csv --run-id <id> --expected-count <n> --outdir out`
+- Run command (`--bulk` is optional; without it each company is looked up live in Brreg, about 1 extra request each): `uv sync && uv run python scripts/run_signalpost.py --organisations <batch.jsonl> [--bulk brreg-enheter.csv] --run-id <id> --expected-count <n> --outdir out`
 - Models/APIs: none (no LLM, no paid API). Sources: Brønnøysundregistrene open data (NLOD 2.0) and company-owned websites (robots.txt respected, public-URL guard).
 - Expected third-party cost: USD 0. Measured: ~1,000 requests and ~5 min per 100 companies.
 - 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json` (run smoke-002, contract format, 106 tests pass).

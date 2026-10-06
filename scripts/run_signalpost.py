@@ -48,7 +48,7 @@ def material_changes(old: dict | None, new: dict) -> list[dict]:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--organisations", required=True)
-    p.add_argument("--bulk", required=True)
+    p.add_argument("--bulk", default=None, help="optional Brreg bulk snapshot; without it each company is looked up live")
     p.add_argument("--run-id", required=True)
     p.add_argument("--expected-count", type=int, required=True)
     p.add_argument("--outdir", default="out")
@@ -58,9 +58,9 @@ def main() -> None:
     out = Path(a.outdir)
     profiles_path, env_path, report_path = out / "profiles.jsonl", out / "envelopes.jsonl", out / "run-report.json"
     base_modules = ",".join(MODULES.split(",")[:-1])
-    cmd = [sys.executable, str(ROOT / "scripts" / "run_competition_batch.py"), "--organisations", a.organisations, "--bulk", a.bulk,
+    cmd = [sys.executable, str(ROOT / "scripts" / "run_competition_batch.py"), "--organisations", a.organisations,
            "--profiles-output", str(profiles_path), "--output", str(env_path), "--report", str(report_path),
-           "--run-id", a.run_id, "--expected-count", str(a.expected_count), "--workers", str(a.workers), "--modules", base_modules]
+           "--run-id", a.run_id, "--expected-count", str(a.expected_count), "--workers", str(a.workers), "--modules", base_modules] + (["--bulk", a.bulk] if a.bulk else [])
     rc = subprocess.run(cmd, stdout=subprocess.DEVNULL).returncode
     if rc != 0:
         raise SystemExit(f"base pipeline failed ({rc})")
