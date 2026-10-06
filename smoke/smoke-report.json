@@ -1,7 +1,7 @@
 {
-  "run_id": "smoke-002",
-  "started_at": "2026-10-06T09:17:54.952005Z",
-  "completed_at": "2026-10-06T09:23:57.854540Z",
+  "run_id": "smoke-003",
+  "started_at": "2026-10-06T09:49:10.056011Z",
+  "completed_at": "2026-10-06T09:58:14.388727Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -18,16 +18,18 @@
     "external_footprint"
   ],
   "registry": {
-    "registry_snapshot_sha256": "8483831efe73d873460e4c6765c98f46a1937a59b763c074ea32a6d2e657bc70",
-    "registry_rows_scanned": 1172258,
+    "registry_snapshot_sha256": null,
+    "registry_rows_scanned": 0,
     "requested": 100,
-    "selected": 100
+    "selected": 0,
+    "live_lookups": 100,
+    "bulk_note": "bulk snapshot not supplied"
   },
   "operations": {
-    "requests": 1049,
-    "bytes": 2623199,
-    "p50_ms": 983,
-    "p95_ms": 2358,
+    "requests": 1160,
+    "bytes": 2623039,
+    "p50_ms": 969,
+    "p95_ms": 1889,
     "third_party_cost_usd": 0
   },
   "validation": {
