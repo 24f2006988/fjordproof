@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from norway_company_agent.batch import profile_complete_for_modules, profiles_from_bulk, read_organisation_inputs, terminal_envelope, validate_envelopes  # noqa: E402
-from norway_company_agent.evidence import utc_now  # noqa: E402
+from norway_company_agent.budget import BudgetGuard  # noqa: E402
+from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.identity import apply_website_identity_gate  # noqa: E402
 from norway_company_agent.official import fetch_official_modules  # noqa: E402
 from norway_company_agent.website import fetch_website  # noqa: E402
@@ -39,6 +40,8 @@ def main() -> None:
     parser.add_argument("--checkpoint-every", type=int, default=25)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--modules", default="registry,accounting_obligation,registry_live,financials,roles,group,locations,website")
+    parser.add_argument("--max-runtime-seconds", type=float, default=2400.0, help="maximum runtime in seconds (default 2400 = 40m)")
+    parser.add_argument("--max-requests", type=int, default=None, help="maximum request limit")
     args = parser.parse_args()
 
     started_at = utc_now()
@@ -54,20 +57,34 @@ def main() -> None:
                 profile[key] = annotations[profile["organisation_number"]][key]
     requested_modules = [item.strip() for item in args.modules.split(",") if item.strip()]
     fetch_modules = set(requested_modules) - {"registry", "accounting_obligation", "website"}
-    operations = {"requests": registry_metadata.get("live_lookups", 0), "bytes": 0, "latencies_ms": []}
+    live_requests = registry_metadata.get("live_lookups", 0)
+    operations = {"requests": live_requests, "bytes": 0, "latencies_ms": []}
+    max_reqs = args.max_requests if args.max_requests is not None else max(1800, int(args.expected_count * 15))
+    budget = BudgetGuard(max_runtime_seconds=args.max_runtime_seconds, max_requests=max_reqs)
+    budget.record_requests(live_requests)
 
     def enrich(profile: dict) -> tuple[dict, dict]:
         records, metrics = fetch_official_modules(profile["organisation_number"], fetch_modules)
         profile["evidence"].update(records)
         website_metrics = {"requests": 0, "bytes": 0, "latencies_ms": []}
         if "website" in requested_modules:
-            website_record, website_metrics = fetch_website(profile.get("website"))
-            profile["evidence"]["website"] = apply_website_identity_gate(profile, website_record)["website"]
+            if budget.is_exhausted(safety_margin_seconds=180.0, safety_margin_requests=100):
+                profile["evidence"]["website"] = evidence(
+                    "website",
+                    "budget_exhausted",
+                    "system_budget_guard",
+                    "https://builderr.ai",
+                    note=f"Budget guard active ({int(budget.elapsed_seconds)}s elapsed); skipping website fetch",
+                )
+            else:
+                website_record, website_metrics = fetch_website(profile.get("website"))
+                profile["evidence"]["website"] = apply_website_identity_gate(profile, website_record)["website"]
         metric = {
             "requests": len(metrics) + website_metrics["requests"],
             "bytes": sum(item.bytes_received for item in metrics) + website_metrics["bytes"],
             "latencies_ms": [item.elapsed_ms for item in metrics] + website_metrics["latencies_ms"],
         }
+        budget.record_requests(metric["requests"])
         profile["run_metrics"] = metric
         return profile, metric
 

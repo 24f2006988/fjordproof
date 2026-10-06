@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from norway_company_agent.batch import terminal_envelope, validate_envelopes  # noqa: E402
+from norway_company_agent.budget import BudgetGuard  # noqa: E402
 from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.footprint_plus import discover_website, extract_footprint  # noqa: E402
@@ -54,18 +55,24 @@ def main() -> None:
     p.add_argument("--outdir", default="out")
     p.add_argument("--previous", help="previous envelopes JSONL (snapshot is preserved; changes are reported)")
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--max-runtime-seconds", type=float, default=2400.0, help="maximum wallclock runtime in seconds (default: 2400 = 40m)")
+    p.add_argument("--max-requests", type=int, default=None, help="maximum outbound requests (default: batch scaled)")
     a = p.parse_args()
     out = Path(a.outdir)
     profiles_path, env_path, report_path = out / "profiles.jsonl", out / "envelopes.jsonl", out / "run-report.json"
     base_modules = ",".join(MODULES.split(",")[:-1])
+    max_reqs = a.max_requests if a.max_requests is not None else max(1800, int(a.expected_count * 15))
+    budget = BudgetGuard(max_runtime_seconds=a.max_runtime_seconds, max_requests=max_reqs)
     cmd = [sys.executable, str(ROOT / "scripts" / "run_competition_batch.py"), "--organisations", a.organisations,
            "--profiles-output", str(profiles_path), "--output", str(env_path), "--report", str(report_path),
-           "--run-id", a.run_id, "--expected-count", str(a.expected_count), "--workers", str(a.workers), "--modules", base_modules] + (["--bulk", a.bulk] if a.bulk else [])
+           "--run-id", a.run_id, "--expected-count", str(a.expected_count), "--workers", str(a.workers), "--modules", base_modules,
+           "--max-runtime-seconds", str(budget.remaining_seconds), "--max-requests", str(max_reqs)] + (["--bulk", a.bulk] if a.bulk else [])
     rc = subprocess.run(cmd, stdout=subprocess.DEVNULL).returncode
     if rc != 0:
         raise SystemExit(f"base pipeline failed ({rc})")
     profiles = [json.loads(l) for l in profiles_path.read_text(encoding="utf-8").splitlines() if l.strip()]
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    budget.record_requests(report.get("operations", {}).get("requests", 0))
     previous = {}
     if a.previous and Path(a.previous).exists():
         previous = {e["organisation_number"]: e["profile"] for e in map(json.loads, Path(a.previous).read_text(encoding="utf-8").splitlines()) if e.get("profile")}
@@ -74,20 +81,32 @@ def main() -> None:
         extra = {"requests": 0, "bytes": 0}
         try:
             site = profile["evidence"].get("website", {})
-            if site.get("status") != "available":
-                found, m = discover_website(profile)
+            if budget.is_exhausted(safety_margin_seconds=120.0, safety_margin_requests=50):
+                if site.get("status") not in {"available", "not_applicable"}:
+                    profile["evidence"]["website"] = evidence(
+                        "website", "budget_exhausted", "system_budget_guard", "https://builderr.ai",
+                        note=f"Budget guard active ({int(budget.elapsed_seconds)}s elapsed, {budget.requests} reqs); skipping discovery",
+                    )
+                profile["evidence"]["external_footprint"] = evidence(
+                    "external_footprint", "budget_exhausted", "system_budget_guard", "https://builderr.ai",
+                    note=f"Budget guard active ({int(budget.elapsed_seconds)}s elapsed, {budget.requests} reqs); skipping footprint",
+                )
+            else:
+                if site.get("status") != "available":
+                    found, m = discover_website(profile)
+                    extra["requests"] += m["requests"]
+                    extra["bytes"] += m["bytes"]
+                    if found:
+                        profile["evidence"]["website"] = found
+                        profile["website"] = found["source_url"]
+                fp, m = extract_footprint(profile, profile["evidence"]["website"])
                 extra["requests"] += m["requests"]
                 extra["bytes"] += m["bytes"]
-                if found:
-                    profile["evidence"]["website"] = found
-                    profile["website"] = found["source_url"]
-            fp, m = extract_footprint(profile, profile["evidence"]["website"])
-            extra["requests"] += m["requests"]
-            extra["bytes"] += m["bytes"]
-            profile["evidence"]["external_footprint"] = fp
+                profile["evidence"]["external_footprint"] = fp
         except Exception as exc:  # never drop a company
             profile["evidence"]["external_footprint"] = evidence("external_footprint", "source_error", "company_owned_site",
                                                                   "https://builderr.ai", note=f"{type(exc).__name__}: {str(exc)[:150]}")
+        budget.record_requests(extra["requests"])
         profile.setdefault("run_metrics", {})["plus_requests"] = extra["requests"]
         profile["changes_since_previous"] = material_changes(previous.get(profile["organisation_number"]), profile)
         return profile
@@ -104,6 +123,8 @@ def main() -> None:
     report.update({"modules": MODULES.split(","), "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})
     report["operations"]["requests"] += plus_requests
     report["operations"]["third_party_cost_usd"] = 0
+    report["operations"]["budget_exhausted"] = budget.is_exhausted(safety_margin_seconds=0, safety_margin_requests=0)
+
     write_jsonl(profiles_path, profiles)
     write_jsonl(env_path, envelopes)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

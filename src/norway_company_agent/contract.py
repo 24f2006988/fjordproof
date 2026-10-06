@@ -10,6 +10,7 @@ AVAILABILITY = {
     "not_found": "not_available",
     "not_applicable": "not_applicable",
     "blocked": "blocked",
+    "budget_exhausted": "not_available",
     "source_error": "failed",
     "not_fetched": "failed",
 }

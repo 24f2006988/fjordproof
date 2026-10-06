@@ -159,6 +159,8 @@ def evidence_terminal_state(record: dict[str, Any] | None) -> str:
         return "blocked_robots" if "robot" in note else "blocked_policy"
     if status == "source_error":
         return "source_error"
+    if status == "budget_exhausted":
+        return "budget_exhausted"
     return "submission_error"
 
 
