@@ -57,9 +57,9 @@ class ContractAdapterTest(unittest.TestCase):
                                                 "email": "post@eksempel.no", "phone": "22000000", "share_capital": {"amount": 30000.0, "currency": "NOK"},
                                                 "incorporation_date": "2020-01-01", "vat_registered": True}),
                 "financials": evidence("financials", "available", "official_annual_accounts", "https://data.brreg.no/regnskapsregisteret/regnskap/123456789",
-                                       value={"records": [{"revenue": 1000000.0, "operating_result": 100000.0, "annual_result": 80000.0, "assets": 500000.0, "equity": 200000.0, "debt": 300000.0, "period": {"tilDato": "2024-12-31"}}]}),
+                                       value={"records": [{"revenue": 1000000.0, "operating_result": 100000.0, "profit_before_tax": 95000.0, "annual_result": 80000.0, "assets": 500000.0, "equity": 200000.0, "debt": 300000.0, "period": {"tilDato": "2024-12-31"}}]}),
                 "roles": evidence("roles", "available", "official_roles", "https://data.brreg.no/enhetsregisteret/api/enheter/123456789/roller",
-                                  value={"roles": [{"name": "Ola Nordmann", "role_code": "DAGL"}, {"name": "Kari Nordmann", "role_code": "LEDE"}]}),
+                                  value={"roles": [{"name": "Ola Nordmann", "role_code": "DAGL"}, {"name": "Kari Nordmann", "role_code": "LEDE"}, {"name": "Per Hansen", "role_code": "MEDL"}]}),
                 "locations": evidence("locations", "available", "official_subunits", "https://data.brreg.no/enhetsregisteret/api/underenheter?overordnetEnhet=123456789",
                                       value={"locations": [{"organisation_number": "987654321", "name": "Eksempel Avd"}]}),
                 "website": evidence("website", "available", "discovered_company_website", "https://eksempel.no/",
@@ -76,9 +76,13 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertEqual(claims["registered_email"]["value"], "post@eksempel.no")
         self.assertEqual(claims["registered_phone"]["value"], "22000000")
         self.assertEqual(claims["revenue"]["value"], 1000000.0)
+        self.assertEqual(claims["profit_before_tax"]["value"], 95000.0)
         self.assertEqual(claims["ceo"]["value"], "Ola Nordmann")
         self.assertEqual(claims["board_chair"]["value"], "Kari Nordmann")
+        self.assertEqual(claims["board_members"]["value"], ["Per Hansen"])
         self.assertEqual(claims["registered_workplaces_count"]["value"], 1)
+        self.assertEqual(len(claims["registered_workplaces"]["value"]), 1)
+        self.assertEqual(claims["site_email"]["value"], "hei@eksempel.no")
         self.assertEqual(claims["website_title"]["value"], "Eksempel AS Hjemmeside")
         self.assertEqual(claims["careers_urls"]["value"], ["https://eksempel.no/karriere"])
         self.assertEqual(claims["social_profiles"]["value"], [{"platform": "linkedin", "url": "https://linkedin.com/company/eksempel"}])

@@ -5,6 +5,8 @@ number are published. Everything else stays `not_found`. Uses the starter's SSRF
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import socket
 import urllib.parse
@@ -27,9 +29,45 @@ NEWS_TERMS = ("nyheter", "news", "aktuelt", "blogg", "blog", "presse", "press")
 
 
 GENERIC_SLUG_TOKENS = {
-    "holding", "invest", "eiendom", "drift", "forvaltning", "gruppen", "group",
-    "markedforing", "markedsforing", "service", "partner", "consulting",
+    "holding", "invest", "eiendom", "eiendommer", "drift", "forvaltning", "gruppen", "group",
+    "markedforing", "markedsforing", "service", "partner", "consulting", "norge", "norway",
+    "as", "solutions", "teknologi", "handel", "transport", "bygg", "montasje",
 }
+BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+
+
+def _brave_search_candidates(profile: dict[str, Any], api_key: str, timeout: float = 8.0) -> list[str]:
+    try:
+        from .discovery import build_company_search_query, choose_search_candidate, parse_brave_web_results
+        query = build_company_search_query(profile)
+        url = BRAVE_ENDPOINT + "?" + urllib.parse.urlencode({
+            "q": query,
+            "count": 5,
+            "country": "no",
+            "search_lang": "nb",
+            "safesearch": "moderate",
+            "spellcheck": "0",
+        })
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            "Cache-Control": "no-cache",
+            "User-Agent": "builderr-signalpost-poc/0.1 (+https://builderr.ai)",
+            "X-Subscription-Token": api_key,
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read())
+        results = parse_brave_web_results(payload, query=query)
+        decision = choose_search_candidate(profile, results)
+        selected = decision.get("selected")
+        if selected and selected.get("url"):
+            parsed = urllib.parse.urlparse(selected["url"])
+            host = (parsed.hostname or "").casefold().removeprefix("www.")
+            if host:
+                return [host]
+    except Exception:
+        pass
+    return []
 
 
 def _resolves(host: str) -> bool:
@@ -78,7 +116,13 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
                     if root_d not in FREE_MAIL:
                         out.append((root_d, "registry_email_domain"))
 
-    # 2. Name slug candidates with Norwegian vowel digraphs and generic token stripping
+    # 2. Brave Search candidate (if key present in env)
+    brave_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
+    if brave_key:
+        for b_host in _brave_search_candidates(profile, brave_key):
+            out.append((b_host, "brave_search_candidate"))
+
+    # 3. Name slug candidates with Norwegian vowel digraphs and generic token stripping
     tokens = _tokens(profile.get("name"))
     if tokens:
         token_sets = [tokens]
@@ -97,12 +141,32 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
                 for tld in ("no", "com"):
                     out.append((f"{slug}.{tld}", "name_slug_guess"))
 
+    # 4. Subunit name slug candidates (operating brand distinct from legal entity)
+    for loc in (profile.get("evidence", {}).get("locations", {}).get("value") or {}).get("locations", []):
+        loc_name = loc.get("name")
+        if loc_name and loc_name.strip().casefold() != str(profile.get("name") or "").strip().casefold():
+            sub_tokens = _tokens(loc_name)
+            if sub_tokens:
+                sub_core = [t for t in sub_tokens if t not in GENERIC_SLUG_TOKENS]
+                sub_sets = [sub_tokens]
+                if sub_core and len(sub_core) < len(sub_tokens) and len(sub_core) >= 1:
+                    sub_sets.append(sub_core)
+                for stset in sub_sets:
+                    s_joined = "".join(stset)
+                    s_hyphen = "-".join(stset)
+                    s_forms = _slug_variants(s_joined)
+                    if len(stset) > 1:
+                        s_forms.update(_slug_variants(s_hyphen))
+                    for slug in sorted(s_forms, key=len):
+                        for tld in ("no", "com"):
+                            out.append((f"{slug}.{tld}", "subunit_name_guess"))
+
     seen, unique = set(), []
     for host, method in out:
         if host not in seen:
             seen.add(host)
             unique.append((host, method))
-    return unique[:6]
+    return unique[:8]
 
 
 def discover_website(profile: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, int]]:
@@ -222,11 +286,11 @@ def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any]) -> tup
             continue
         html = body.decode("utf-8", errors="replace")
         text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
-        squeezed = re.sub(r"(?<=\d)[ . \-_](?=\d)", "", text)
-        raw_squeezed = re.sub(r"(?<=\d)[ . \-_](?=\d)", "", html)
+        squeezed = re.sub(r"(?<=\d)[\s.\-_](?=\d)", "", text)
+        raw_squeezed = re.sub(r"(?<=\d)[\s.\-_](?=\d)", "", html)
         if org_re and (org_re.search(squeezed) or org_re.search(raw_squeezed)):
             return f"exact organisation number printed on {url}", metrics
-        if zipc and any(len(s) >= 6 and s in text.casefold() for s in targets["streets"]) and re.search(rf"(?<!\d){zipc}(?!\d)", text):
+        if zipc and any(len(s) >= 4 and s in text.casefold() for s in targets["streets"]) and re.search(rf"(?<!\d){zipc}(?!\d)", text):
             return f"registered street address and postcode printed on {url}", metrics
         if first_html is None:
             first_html = html
@@ -288,7 +352,8 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
                         note="No identity-verified company website; nothing published."), metrics
     raw, final = _get(source)
     metrics["requests"] += 2
-    careers, news_pages, feeds, contact = [], [], [], {}
+    careers, news_pages, feeds, contact, job_postings = [], [], [], {}, []
+    contact_links = []
     if raw and final:
         metrics["bytes"] += len(raw)
         soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml")
@@ -308,11 +373,46 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
                     careers.append(url)
                 if any(t in hay for t in NEWS_TERMS) and url not in news_pages:
                     news_pages.append(url)
+                if any(t in hay for t in ("kontakt", "contact", "om-oss", "omoss")) and url not in contact_links and url.rstrip("/") != final.rstrip("/"):
+                    contact_links.append(url)
             elif any(d in p.netloc.lower() for d in ("finn.no", "webcruiter", "easycruit", "teamtailor", "recman", "varbi", "lever.co", "greenhouse.io")) \
                     and any(t in hay for t in CAREER_TERMS + ("stilling", "finn")) and url not in careers:
                 careers.append(url)
         for link in soup.select('link[rel="alternate"][type*="rss"], link[rel="alternate"][type*="atom"]'):
             feeds.append(urllib.parse.urljoin(final, str(link.get("href") or "")))
+        for s in soup.select('script[type="application/ld+json"]'):
+            try:
+                jdata = json.loads(s.string or s.get_text() or "{}")
+                items = jdata if isinstance(jdata, list) else [jdata]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if "email" not in contact and item.get("email"):
+                        contact["email"] = str(item["email"])[:120]
+                    if "phone" not in contact and item.get("telephone"):
+                        contact["phone"] = str(item["telephone"])[:40]
+                    if item.get("@type") == "JobPosting" and item.get("title"):
+                        job_postings.append({
+                            "title": str(item["title"])[:200],
+                            "date_posted": str(item.get("datePosted") or "")[:20],
+                            "employment_type": str(item.get("employmentType") or "")[:50],
+                        })
+            except Exception:
+                pass
+
+    if contact_links and (not contact.get("email") or not contact.get("phone")):
+        craw, cfinal = _get(contact_links[0], timeout=5.0)
+        metrics["requests"] += 1
+        if craw:
+            csoup = BeautifulSoup(craw.decode("utf-8", errors="replace"), "lxml")
+            for ca in csoup.select("a[href]"):
+                curl = urllib.parse.urljoin(cfinal or contact_links[0], str(ca.get("href") or ""))
+                cp = urllib.parse.urlparse(curl)
+                if cp.scheme == "mailto" and "email" not in contact:
+                    contact["email"] = cp.path[:120]
+                elif cp.scheme == "tel" and "phone" not in contact:
+                    contact["phone"] = cp.path[:40]
+
     activity = []
     for feed in feeds[:2]:
         fraw, ffinal = _get(feed)
@@ -320,10 +420,11 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         if fraw:
             metrics["bytes"] += len(fraw)
             activity += [{**item, "source_feed": ffinal} for item in _parse_feed(fraw, ffinal or feed)]
-    found = bool(careers or activity or contact or news_pages)
+    found = bool(careers or activity or contact or news_pages or job_postings)
     return evidence(
         "external_footprint", "available" if found else "not_found", "company_owned_site", final or source,
         value={"careers_urls": careers[:4], "news_pages": news_pages[:3], "dated_activity": activity[:8],
-               "contact": contact, "social_links": (value.get("social_links") or [])},
+               "contact": contact, "social_links": (value.get("social_links") or []),
+               "job_postings": job_postings[:6]},
         note="Extracted only from an identity-verified company-owned website; activity dates come from the site's own feed.",
     ), metrics

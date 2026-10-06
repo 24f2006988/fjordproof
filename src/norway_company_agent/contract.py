@@ -111,6 +111,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     scalar("share_capital", cap)
     scalar("incorporation_date", live_rec.get("incorporation_date") or raw_rec.get("stiftelsesdato"))
     scalar("vat_registered", live_rec.get("vat_registered") if "vat_registered" in live_rec else (raw_rec.get("registrertIMvaregisteret") == "true" if "registrertIMvaregisteret" in raw_rec else None))
+    scalar("audit_exemption", live_rec.get("audit_exemption") or raw_rec.get("fravalgRevisjonBeslutningsDato"))
 
     # Accounting obligation
     acc_ob = records.get("accounting_obligation", {})
@@ -137,6 +138,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     fin_scalar("latest_accounts_year", (latest_acc.get("period") or {}).get("tilDato", "")[:4] or profile.get("latest_submitted_accounts"))
     fin_scalar("revenue", latest_acc.get("revenue"))
     fin_scalar("operating_result", latest_acc.get("operating_result"))
+    fin_scalar("profit_before_tax", latest_acc.get("profit_before_tax"))
     fin_scalar("annual_result", latest_acc.get("annual_result"))
     fin_scalar("total_assets", latest_acc.get("assets"))
     fin_scalar("total_equity", latest_acc.get("equity"))
@@ -158,10 +160,24 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         })
     role_scalar("ceo", "DAGL")
     role_scalar("board_chair", "LEDE")
+    role_scalar("deputy_chair", "NEST")
     role_scalar("auditor", "REVI")
     role_scalar("accountant", "REGN")
 
-    # Granular workplaces count
+    board_members = [
+        r.get("name") or r.get("organisation_number")
+        for r in roles_list
+        if r.get("role_code") == "MEDL" and not r.get("inactive") and (r.get("name") or r.get("organisation_number"))
+    ]
+    claims.append({
+        "field": "board_members",
+        "value": board_members if (roles_ok and board_members) else None,
+        "availability": "available" if (roles_ok and board_members) else ("not_available" if roles_rec.get("status") in {"available", "not_found"} else "failed"),
+        "confidence": 0.99 if (roles_ok and board_members) else 0.0,
+        "evidence_ids": ["ev-roles"] if (roles_ok and board_members and "roles" in records) else [],
+    })
+
+    # Granular workplaces count and details
     loc_rec = records.get("locations", {})
     loc_ok = loc_rec.get("status") == "available"
     loc_list = (loc_rec.get("value") or {}).get("locations") or []
@@ -171,6 +187,24 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         "availability": "available" if loc_ok else ("not_available" if loc_rec.get("status") in {"available", "not_found"} else "failed"),
         "confidence": 0.99 if loc_ok else 0.0,
         "evidence_ids": ["ev-locations"] if loc_ok and "locations" in records else [],
+    })
+    workplaces = [
+        {
+            "name": loc.get("name"),
+            "organisation_number": loc.get("organisation_number"),
+            "address": loc.get("address"),
+            "industry": loc.get("industry"),
+            "employees": loc.get("employees"),
+        }
+        for loc in loc_list
+        if loc.get("name") or loc.get("organisation_number")
+    ]
+    claims.append({
+        "field": "registered_workplaces",
+        "value": workplaces if (loc_ok and workplaces) else None,
+        "availability": "available" if (loc_ok and workplaces) else ("not_available" if loc_rec.get("status") in {"available", "not_found"} else "failed"),
+        "confidence": 0.99 if (loc_ok and workplaces) else 0.0,
+        "evidence_ids": ["ev-locations"] if (loc_ok and workplaces and "locations" in records) else [],
     })
 
     # Granular website details
@@ -207,6 +241,26 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             "confidence": 0.80 if present else 0.0,
             "evidence_ids": ["ev-external_footprint"] if present and "external_footprint" in records else [],
         })
+    contact_dict = fp_val.get("contact") or {}
+    for cfld, ckey in (("site_email", "email"), ("site_phone", "phone")):
+        cval = contact_dict.get(ckey)
+        cpresent = fp_ok and cval not in (None, "")
+        claims.append({
+            "field": cfld,
+            "value": cval if cpresent else None,
+            "availability": "available" if cpresent else ("not_available" if fp_rec.get("status") in {"available", "not_found"} else "failed"),
+            "confidence": 0.80 if cpresent else 0.0,
+            "evidence_ids": ["ev-external_footprint"] if cpresent and "external_footprint" in records else [],
+        })
+    jobs_val = fp_val.get("job_postings") or []
+    jobs_present = fp_ok and bool(jobs_val)
+    claims.append({
+        "field": "job_postings",
+        "value": jobs_val if jobs_present else None,
+        "availability": "available" if jobs_present else ("not_available" if fp_rec.get("status") in {"available", "not_found"} else "failed"),
+        "confidence": 0.80 if jobs_present else 0.0,
+        "evidence_ids": ["ev-external_footprint"] if jobs_present and "external_footprint" in records else [],
+    })
 
     # Baseline module claims (preserving existing contract compatibility)
     for module, (field, confidence) in MODULE_CLAIMS.items():
