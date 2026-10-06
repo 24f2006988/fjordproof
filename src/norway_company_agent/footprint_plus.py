@@ -90,11 +90,34 @@ def discover_website(profile: dict[str, Any]) -> tuple[dict[str, Any] | None, di
     return None, metrics
 
 
-PROOF_PATHS = ("/kontakt", "/kontakt-oss", "/om-oss", "/contact", "/about", "/personvern", "/privacy", "/vilkar", "/handlebetingelser")
+PROOF_PATHS = ("/kontakt", "/kontakt-oss", "/om-oss", "/om", "/contact", "/about", "/about-us", "/personvern", "/personvernerklaering",
+               "/privacy", "/privacy-policy", "/vilkar", "/vilkaar", "/handlebetingelser", "/salgsbetingelser", "/impressum", "/cookies")
+PROOF_LINK_TERMS = ("kontakt", "contact", "om-oss", "omoss", "om oss", "about", "personvern", "privacy", "vilk", "terms", "betingelser",
+                    "impressum", "cookie", "fakturering", "selskap", "company")
+MAX_PROOF_PAGES = 10
+
+
+def _proof_links(root: str, html: str) -> list[str]:
+    """Same-host links on the homepage whose address or text suggests a contact / legal / about page."""
+    host = urllib.parse.urlparse(root).netloc.lower().removeprefix("www.")
+    found: list[str] = []
+    for a in BeautifulSoup(html, "lxml").find_all("a", href=True):
+        href = urllib.parse.urljoin(root + "/", a["href"].strip()).split("#")[0]
+        parsed = urllib.parse.urlparse(href)
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower().removeprefix("www.") != host:
+            continue
+        label = (parsed.path + " " + a.get_text(" ", strip=True)).casefold()
+        if any(term in label for term in PROOF_LINK_TERMS) and href not in found:
+            found.append(href)
+    return found
 
 
 def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any]) -> tuple[str | None, dict[str, int]]:
-    """Exact org number, or registered street address + postcode, printed on the company's own pages."""
+    """Exact org number, or registered street address + postcode, printed on the company's own pages.
+
+    Looks at the homepage, then contact/about/legal pages linked from it, then a short list of conventional paths.
+    The org number must stand alone (not be part of a longer digit string) so a phone number cannot match.
+    """
     metrics = {"requests": 0}
     org = re.sub(r"\D", "", str(profile.get("organisation_number") or ""))
     raw = (profile.get("evidence", {}).get("registry", {}).get("value") or {})
@@ -103,17 +126,36 @@ def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any]) -> tup
     base = website.get("source_url") or ""
     parsed = urllib.parse.urlparse(base)
     root = f"{parsed.scheme}://{parsed.netloc}"
-    pages = [base] + [root + path for path in PROOF_PATHS]
-    for i, url in enumerate(pages):
-        body, _ = _get(url)
-        metrics["requests"] += 1 if i else 0
-        if not body:
+    org_re = re.compile(rf"(?<!\d){org}(?!\d)") if len(org) == 9 else None
+    seen: set[str] = set()
+    queue = [base]
+    fetched = 0
+    first_html = None
+    while queue and fetched < MAX_PROOF_PAGES:
+        url = queue.pop(0)
+        if url in seen:
             continue
-        text = BeautifulSoup(body.decode("utf-8", errors="replace"), "lxml").get_text(" ", strip=True)
-        if org and org in re.sub(r"(?<=\d)[ .](?=\d)", "", text):
+        seen.add(url)
+        body, _ = _get(url)
+        if fetched:
+            metrics["requests"] += 1
+        fetched += 1
+        if not body:
+            if first_html is None and url == base:
+                queue.extend(root + path for path in PROOF_PATHS)
+            continue
+        html = body.decode("utf-8", errors="replace")
+        text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+        squeezed = re.sub(r"(?<=\d)[ . ](?=\d)", "", text)
+        raw_squeezed = re.sub(r"(?<=\d)[ . ](?=\d)", "", html)
+        if org_re and (org_re.search(squeezed) or org_re.search(raw_squeezed)):
             return f"exact organisation number printed on {url}", metrics
-        if street and len(street) >= 6 and zipc and street in text.casefold() and zipc in text:
+        if street and len(street) >= 6 and zipc and street in text.casefold() and re.search(rf"(?<!\d){zipc}(?!\d)", text):
             return f"registered street address and postcode printed on {url}", metrics
+        if first_html is None:
+            first_html = html
+            queue.extend(_proof_links(root, html)[:6])
+            queue.extend(root + path for path in PROOF_PATHS)
     return None, metrics
 
 

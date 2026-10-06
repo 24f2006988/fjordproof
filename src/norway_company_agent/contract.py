@@ -85,6 +85,12 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         value = rec.get("value")
         if module == "website":
             value = rec.get("source_url") if availability == "available" else None
+        if module == "website" and availability == "available":
+            # A site the registry lists but whose page does not confirm the legal entity (brand, franchise, shared or
+            # interstitial page) stays visible as the registry's statement, with low confidence, never as a verified match.
+            score = ((rec.get("value") or {}).get("identity_assessment") or {}).get("score")
+            if rec.get("source_type") == "registry_linked_company_website" and (score is None or score < 0.9):
+                confidence = 0.5
         claims.append(
             {
                 "field": field,

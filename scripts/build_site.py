@@ -216,7 +216,7 @@ function card(d){
     el("div", {class:"meta", text:[legal, mun, d.org].filter(Boolean).join(" · ")}),
     el("div", {class:"meta", text:ind ? ind.label + " (" + ind.code + ")" : "Industry not found"}),
     el("div", {class:"meta", text:acc ? "Revenue " + (acc.period?.tilDato||"").slice(0,4) + ": " + (acc.revenue == null ? "not reported" : money(acc.revenue) + " " + (acc.currency||"")) : "No annual accounts found"}),
-    el("div", {class:"tags"}, el("span", {class:"tag " + stCls, text:stText}), el("span", {class:"tag" + (site?" ok":""), text:site ? "Website verified" : "No verified website"}), el("span", {class:"tag", text:found(d) + "/" + FIELDS.length + " fields found"})),
+    el("div", {class:"tags"}, el("span", {class:"tag " + stCls, text:stText}), el("span", {class:"tag" + (site && !(claim(d,"official_website").c < 0.9) ? " ok" : ""), text:site ? (claim(d,"official_website").c < 0.9 ? "Website listed, unconfirmed" : "Website verified") : "No verified website"}), el("span", {class:"tag", text:found(d) + "/" + FIELDS.length + " fields found"})),
     el("label", {class:"cmp"}, el("input", {type:"checkbox", checked:st.cmp.has(d.org), "aria-label":"Compare " + d.name, onchange: e => { if (e.target.checked){ if (st.cmp.size >= 4){ e.target.checked = false; return; } st.cmp.add(d.org); } else st.cmp.delete(d.org); cmpBar(); }}), "Compare"));
 }
 function cmpBar(){
@@ -252,7 +252,8 @@ function summary(d){
   add(emp != null ? "The registry reports " + emp + " employees." : "The registry reports no employee count, so none is stated.", refs(d, claim(d,"employees")?.e));
   const r = activeRoles(d); if (r.length) add(r.length + " current roles are registered, for example " + r.slice(0,2).map(x => (Array.isArray(x.name) ? x.name.join(" ") : x.name) + " (" + x.role + ")").join(" and ") + ".", refs(d, claim(d,"roles")?.e));
   const site = val(d,"official_website");
-  add(site ? "A website was matched to this company: " : "No website could be verified for this company. ", site ? link(site) : "", refs(d, claim(d,"official_website")?.e));
+  const wc = claim(d,"official_website"); const weak = site && wc.c != null && wc.c < 0.9;
+  add(site ? (weak ? "The registry lists this website, but the page does not confirm it belongs to this exact company (it may be a brand, franchise or shared site): " : "A website was matched to this company: ") : "No website could be verified for this company. ", site ? link(site) : "", refs(d, wc?.e));
   const act = activity(d); if (act.length){ const latest = act.map(x => x.date).filter(Boolean).sort().pop(); add(act.length + " dated public items were found on the company site; the latest is dated " + latest + ".", refs(d, claim(d,"external_footprint")?.e)); }
   const ch = d.changes; add(ch.length ? ch.length + " changes since the previous run (listed below)." : "No earlier snapshot to compare with, so this run is the baseline. Later runs list any changes here and keep the earlier evidence.");
   return p;
@@ -302,7 +303,8 @@ function groupPanel(d){
 function activityPanel(d){
   const v = val(d,"external_footprint"); const box = el("div", {class:"panel"}, el("h2", {text:"Website and public activity"}));
   const site = val(d,"official_website");
-  box.append(el("p", {}, site ? ["Verified website: ", link(site), refs(d, claim(d,"official_website")?.e)] : "No website could be verified for this company."), d.website_note && site ? el("p", {class:"meta", text:"How it was matched: " + d.website_note}) : null);
+  const wcl = claim(d,"official_website"); const weak = site && wcl.c != null && wcl.c < 0.9;
+  box.append(el("p", {}, site ? [weak ? "Website listed in the registry (identity not confirmed by the page): " : "Verified website: ", link(site), refs(d, wcl?.e)] : "No website could be verified for this company."), d.website_note && site ? el("p", {class:"meta", text:"How it was matched: " + d.website_note}) : null);
   if (!v){ box.append(el("p", {class:"empty", text:NOT_FOUND_WHY.external_footprint})); return box; }
   const act = [...activity(d)].sort((a,b) => (b.date||"").localeCompare(a.date||""));
   if (act.length) box.append(el("h3", {text:"Dated items"}), el("ul", {class:"plain"}, act.slice(0,30).map(x => el("li", {}, (x.date || "undated") + " – ", link(x.url, x.title || x.url)))));
