@@ -132,8 +132,13 @@ domain or name-slug guesses, published only with hard proof of the exact entity 
 street+postcode printed on the company's own pages); (2) `external_footprint` module from verified sites only:
 careers links, news pages, dated feed items, contact and company-owned social links.
 
+### Output format
+Each envelope keeps the starter's native fields (`state`, `modules`, `profile`) and also carries the `OUTPUT_CONTRACT.md` fields
+(`run`, `claims`, `evidence`, `changes`, `errors`, `operations`), added by `src/norway_company_agent/contract.py`.
+Every `available` claim cites `evidence_ids`; missing data is `not_available`/`blocked`/`failed`, never zero-filled.
+
 ### Submission facts
 - Run command: `uv sync && uv run python scripts/run_signalpost.py --organisations <batch.jsonl> --bulk brreg-enheter.csv --run-id <id> --expected-count <n> --outdir out`
 - Models/APIs: none (no LLM, no paid API). Sources: Brønnøysundregistrene open data (NLOD 2.0) and company-owned websites (robots.txt respected, public-URL guard).
 - Expected third-party cost: USD 0. Measured: ~1,000 requests and ~5 min per 100 companies.
-- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json` (Linux, clean uv environment, 104 tests pass).
+- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json` (run smoke-002, contract format, 106 tests pass).

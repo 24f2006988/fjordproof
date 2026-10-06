@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from norway_company_agent.batch import terminal_envelope, validate_envelopes  # noqa: E402
+from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.footprint_plus import discover_website, extract_footprint  # noqa: E402
 
@@ -97,6 +98,7 @@ def main() -> None:
     envelopes = [terminal_envelope(pr, run_id=a.run_id, modules=MODULES.split(","), started_at=report["started_at"], completed_at=completed) for pr in profiles]
     for e in envelopes:
         e["changes"] = e["profile"].get("changes_since_previous", [])
+        to_contract(e)
     validation = validate_envelopes(envelopes, a.expected_count)
     plus_requests = sum(pr.get("run_metrics", {}).get("plus_requests", 0) for pr in profiles)
     report.update({"modules": MODULES.split(","), "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})

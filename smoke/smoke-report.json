@@ -1,7 +1,7 @@
 {
-  "run_id": "linux-001",
-  "started_at": "2026-10-06T05:44:33.359452Z",
-  "completed_at": "2026-10-06T05:49:29.379865Z",
+  "run_id": "smoke-002",
+  "started_at": "2026-10-06T09:17:54.952005Z",
+  "completed_at": "2026-10-06T09:23:57.854540Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -24,10 +24,10 @@
     "selected": 100
   },
   "operations": {
-    "requests": 1024,
-    "bytes": 2623073,
-    "p50_ms": 1379,
-    "p95_ms": 1937,
+    "requests": 1049,
+    "bytes": 2623199,
+    "p50_ms": 983,
+    "p95_ms": 2358,
     "third_party_cost_usd": 0
   },
   "validation": {
