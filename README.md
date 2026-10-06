@@ -1,4 +1,10 @@
-# Signalpost reference agent
+# FjordProof — Signalpost entry
+
+Exact-entity, evidence-backed Norwegian company profiles, built on the Builderr starter kit (see "Signalpost extension" and "Submission facts" below).
+
+---
+
+# Original starter README: Signalpost reference agent
 
 This is a runnable starting point for the Signalpost company-research challenge. It is intentionally a solid baseline, not a winning submission.
 
