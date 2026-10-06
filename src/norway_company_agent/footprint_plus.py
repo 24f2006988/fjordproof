@@ -164,8 +164,6 @@ def _extract_company_proof_targets(profile: dict[str, Any]) -> dict[str, Any]:
         "org": re.sub(r"\D", "", str(profile.get("organisation_number") or "")),
         "streets": [],
         "zipc": "",
-        "phones": [],
-        "leadership": [],
     }
     # from registry_live
     live = (profile.get("evidence", {}).get("registry_live", {}).get("value") or {})
@@ -178,10 +176,6 @@ def _extract_company_proof_targets(profile: dict[str, Any]) -> dict[str, Any]:
                     targets["streets"].append(line.strip().casefold())
             if not targets["zipc"] and addr.get("postnummer"):
                 targets["zipc"] = str(addr.get("postnummer")).strip()
-    if live.get("phone"):
-        digits = re.sub(r"\D", "", str(live.get("phone")))
-        if len(digits) >= 8:
-            targets["phones"].append(digits[-8:])
 
     # from raw registry
     raw = (profile.get("evidence", {}).get("registry", {}).get("value") or {})
@@ -190,22 +184,8 @@ def _extract_company_proof_targets(profile: dict[str, Any]) -> dict[str, Any]:
             targets["streets"].append(val.strip().casefold())
         if "postnummer" in key and isinstance(val, str) and not targets["zipc"]:
             targets["zipc"] = val.strip()
-        if ("telefon" in key or "mobil" in key) and isinstance(val, str):
-            digits = re.sub(r"\D", "", val)
-            if len(digits) >= 8:
-                targets["phones"].append(digits[-8:])
-
-    # from roles (DAGL / LEDE names)
-    roles = (profile.get("evidence", {}).get("roles", {}).get("value") or {}).get("roles", [])
-    for r in roles:
-        if r.get("role_code") in {"DAGL", "LEDE"} and r.get("name"):
-            n = str(r.get("name")).strip()
-            if len(n) >= 5 and " " in n:
-                targets["leadership"].append(n.casefold())
 
     targets["streets"] = list(dict.fromkeys(targets["streets"]))
-    targets["phones"] = list(dict.fromkeys(targets["phones"]))
-    targets["leadership"] = list(dict.fromkeys(targets["leadership"]))
     return targets
 
 
