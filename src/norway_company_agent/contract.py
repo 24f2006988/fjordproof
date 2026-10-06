@@ -57,18 +57,19 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     ident = "registry_live" if records.get("registry_live", {}).get("status") == "available" else "registry"
     ident_ok = records.get(ident, {}).get("status") == "available"
 
-    def scalar(field: str, value: Any) -> None:
-        present = ident_ok and value not in (None, "")
+    def scalar(field: str, value: Any, ev_name: str = ident, conf: float = 0.99) -> None:
+        present = ident_ok and value not in (None, "", [], {})
         claims.append(
             {
                 "field": field,
                 "value": value if present else None,
                 "availability": "available" if present else ("not_available" if ident_ok else "failed"),
-                "confidence": 0.99 if present else 0.0,
-                "evidence_ids": [f"ev-{ident}"] if ident in records else [],
+                "confidence": conf if present else 0.0,
+                "evidence_ids": [f"ev-{ev_name}"] if present and ev_name in records else [],
             }
         )
 
+    # Core official registry identity
     scalar("name", profile.get("name"))
     scalar("legal_form", profile.get("legal_form"))
     scalar("industry", {"code": profile.get("industry_code"), "label": profile.get("industry_label")} if profile.get("industry_code") else None)
@@ -76,6 +77,137 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     scalar("municipality", profile.get("municipality"))
     scalar("insolvency_status", {"bankrupt": profile.get("bankrupt"), "liquidating": profile.get("liquidating")} if profile.get("bankrupt") is not None else None)
 
+    # Official business address and contact
+    live_rec = records.get("registry_live", {}).get("value") or {}
+    raw_rec = records.get("registry", {}).get("value") or {}
+    b_addr_raw = live_rec.get("business_address")
+    b_addr = None
+    if isinstance(b_addr_raw, dict):
+        b_addr = {
+            "address": b_addr_raw.get("adresse"),
+            "postcode": b_addr_raw.get("postnummer"),
+            "city": b_addr_raw.get("poststed"),
+            "municipality": b_addr_raw.get("kommune"),
+            "country": b_addr_raw.get("land", "Norge"),
+        }
+    elif raw_rec.get("forretningsadresse.postnummer"):
+        b_addr = {
+            "address": raw_rec.get("forretningsadresse.adresse") or [v for k, v in raw_rec.items() if "forretningsadresse.adresse" in k],
+            "postcode": raw_rec.get("forretningsadresse.postnummer"),
+            "city": raw_rec.get("forretningsadresse.poststed"),
+            "municipality": raw_rec.get("forretningsadresse.kommune"),
+            "country": raw_rec.get("forretningsadresse.land", "Norge"),
+        }
+    scalar("registered_office", b_addr)
+    scalar("postal_address", live_rec.get("postal_address") or raw_rec.get("postadresse.postnummer"))
+
+    # Registration details
+    email = live_rec.get("email") or raw_rec.get("epostadresse")
+    phone = live_rec.get("phone") or raw_rec.get("telefon") or raw_rec.get("mobil")
+    scalar("registered_email", email)
+    scalar("registered_phone", phone)
+    cap = live_rec.get("share_capital") or ({"amount": float(raw_rec["kapital.belop"]), "currency": raw_rec.get("kapital.valuta", "NOK"), "shares": raw_rec.get("kapital.antallAksjer")} if "kapital.belop" in raw_rec else None)
+    scalar("share_capital", cap)
+    scalar("incorporation_date", live_rec.get("incorporation_date") or raw_rec.get("stiftelsesdato"))
+    scalar("vat_registered", live_rec.get("vat_registered") if "vat_registered" in live_rec else (raw_rec.get("registrertIMvaregisteret") == "true" if "registrertIMvaregisteret" in raw_rec else None))
+
+    # Accounting obligation
+    acc_ob = records.get("accounting_obligation", {})
+    if acc_ob.get("status") == "available" and acc_ob.get("value"):
+        scalar("accounting_obligation", (acc_ob.get("value") or {}).get("classification"), ev_name="accounting_obligation")
+
+    # Granular financial metrics from latest filed accounts
+    fin_rec = records.get("financials", {})
+    fin_ok = fin_rec.get("status") == "available"
+    fin_records = (fin_rec.get("value") or {}).get("records") or []
+    # Records are not guaranteed newest-first: pick the filing with the latest period end.
+    latest_acc = max(fin_records, key=lambda r: str((r.get("period") or {}).get("tilDato") or ""), default={})
+    acc_period = latest_acc.get("period") or None
+    def fin_scalar(field: str, val: Any) -> None:
+        present = fin_ok and val is not None
+        claims.append({
+            "field": field,
+            "period": acc_period if present and field != "latest_accounts_year" else None,
+            "value": val if present else None,
+            "availability": "available" if present else ("not_available" if fin_rec.get("status") in {"available", "not_found"} else "failed"),
+            "confidence": 0.99 if present else 0.0,
+            "evidence_ids": ["ev-financials"] if present and "financials" in records else [],
+        })
+    fin_scalar("latest_accounts_year", (latest_acc.get("period") or {}).get("tilDato", "")[:4] or profile.get("latest_submitted_accounts"))
+    fin_scalar("revenue", latest_acc.get("revenue"))
+    fin_scalar("operating_result", latest_acc.get("operating_result"))
+    fin_scalar("annual_result", latest_acc.get("annual_result"))
+    fin_scalar("total_assets", latest_acc.get("assets"))
+    fin_scalar("total_equity", latest_acc.get("equity"))
+    fin_scalar("total_debt", latest_acc.get("debt"))
+
+    # Granular leadership roles
+    roles_rec = records.get("roles", {})
+    roles_ok = roles_rec.get("status") == "available"
+    roles_list = (roles_rec.get("value") or {}).get("roles") or []
+    def role_scalar(field: str, code: str) -> None:
+        holder = next((r.get("name") or r.get("organisation_number") for r in roles_list if r.get("role_code") == code and not r.get("inactive")), None)
+        present = roles_ok and holder is not None
+        claims.append({
+            "field": field,
+            "value": holder if present else None,
+            "availability": "available" if present else ("not_available" if roles_rec.get("status") in {"available", "not_found"} else "failed"),
+            "confidence": 0.99 if present else 0.0,
+            "evidence_ids": ["ev-roles"] if present and "roles" in records else [],
+        })
+    role_scalar("ceo", "DAGL")
+    role_scalar("board_chair", "LEDE")
+    role_scalar("auditor", "REVI")
+    role_scalar("accountant", "REGN")
+
+    # Granular workplaces count
+    loc_rec = records.get("locations", {})
+    loc_ok = loc_rec.get("status") == "available"
+    loc_list = (loc_rec.get("value") or {}).get("locations") or []
+    claims.append({
+        "field": "registered_workplaces_count",
+        "value": len(loc_list) if loc_ok else None,
+        "availability": "available" if loc_ok else ("not_available" if loc_rec.get("status") in {"available", "not_found"} else "failed"),
+        "confidence": 0.99 if loc_ok else 0.0,
+        "evidence_ids": ["ev-locations"] if loc_ok and "locations" in records else [],
+    })
+
+    # Granular website details
+    web_rec = records.get("website", {})
+    web_ok = web_rec.get("status") == "available"
+    web_val = web_rec.get("value") or {}
+    web_conf = 0.9 if web_ok else 0.0
+    if web_ok and web_rec.get("source_type") == "registry_linked_company_website":
+        score = (web_val.get("identity_assessment") or {}).get("score")
+        if score is None or score < 0.9:
+            web_conf = 0.5
+    for fld, key in (("website_title", "title"), ("website_description", "description")):
+        val = web_val.get(key)
+        present = web_ok and val not in (None, "")
+        claims.append({
+            "field": fld,
+            "value": val if present else None,
+            "availability": "available" if present else ("not_available" if web_rec.get("status") in {"available", "not_found"} else "failed"),
+            "confidence": web_conf if present else 0.0,
+            "evidence_ids": ["ev-website"] if present and "website" in records else [],
+        })
+
+    # Granular external footprint signals
+    fp_rec = records.get("external_footprint", {})
+    fp_ok = fp_rec.get("status") == "available"
+    fp_val = fp_rec.get("value") or {}
+    for fld, key in (("careers_urls", "careers_urls"), ("news_urls", "news_pages"), ("social_profiles", "social_links"), ("site_contact", "contact"), ("dated_activity", "dated_activity")):
+        val = fp_val.get(key)
+        present = fp_ok and val not in (None, "", [], {})
+        claims.append({
+            "field": fld,
+            "value": val if present else None,
+            "availability": "available" if present else ("not_available" if fp_rec.get("status") in {"available", "not_found"} else "failed"),
+            "confidence": 0.80 if present else 0.0,
+            "evidence_ids": ["ev-external_footprint"] if present and "external_footprint" in records else [],
+        })
+
+    # Baseline module claims (preserving existing contract compatibility)
     for module, (field, confidence) in MODULE_CLAIMS.items():
         rec = records.get(module)
         if rec is None:
@@ -86,8 +218,6 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         if module == "website":
             value = rec.get("source_url") if availability == "available" else None
         if module == "website" and availability == "available":
-            # A site the registry lists but whose page does not confirm the legal entity (brand, franchise, shared or
-            # interstitial page) stays visible as the registry's statement, with low confidence, never as a verified match.
             score = ((rec.get("value") or {}).get("identity_assessment") or {}).get("score")
             if rec.get("source_type") == "registry_linked_company_website" and (score is None or score < 0.9):
                 confidence = 0.5

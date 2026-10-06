@@ -150,6 +150,8 @@ def normalize_locations(body: Any) -> dict[str, Any]:
         "address": item.get("beliggenhetsadresse") or item.get("postadresse"),
         "industry": item.get("naeringskode1"),
         "employees": item.get("antallAnsatte"),
+        "email": item.get("epostadresse"),
+        "phone": item.get("telefon") or item.get("mobil"),
     } for item in rows]}
 
 
@@ -167,6 +169,12 @@ def normalize_entity(body: Any) -> dict[str, Any]:
         "business_address": body.get("forretningsadresse"),
         "postal_address": body.get("postadresse"),
         "latest_submitted_accounts": body.get("sisteInnsendteAarsregnskap"),
+        "email": body.get("epostadresse"),
+        "phone": body.get("telefon") or body.get("mobil"),
+        "share_capital": body.get("kapital"),
+        "incorporation_date": body.get("stiftelsesdato"),
+        "vat_registered": body.get("registrertIMvaregisteret"),
+        "audit_exemption": body.get("fravalgRevisjonBeslutningsDato"),
     }
 
 

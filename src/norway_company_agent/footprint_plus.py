@@ -26,7 +26,15 @@ CAREER_TERMS = ("karriere", "career", "ledige-stillinger", "ledige stillinger", 
 NEWS_TERMS = ("nyheter", "news", "aktuelt", "blogg", "blog", "presse", "press")
 
 
+GENERIC_SLUG_TOKENS = {
+    "holding", "invest", "eiendom", "drift", "forvaltning", "gruppen", "group",
+    "markedforing", "markedsforing", "service", "partner", "consulting",
+}
+
+
 def _resolves(host: str) -> bool:
+    # DNS only: a raw TCP probe wrongly rejected apex domains that answer only via www, and it connected
+    # to guessed hosts before the public-URL check.
     try:
         socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
         return True
@@ -34,28 +42,67 @@ def _resolves(host: str) -> bool:
         return False
 
 
+def _slug_variants(text: str) -> set[str]:
+    """Generate Norwegian romanization variants: å -> a / aa, ø -> o / oe, æ -> ae."""
+    v1 = text.translate(str.maketrans({"ø": "o", "å": "a", "æ": "ae"}))
+    v2 = text.translate(str.maketrans({"ø": "oe", "å": "aa", "æ": "ae"}))
+    v3 = text.translate(str.maketrans({"ø": "o", "å": "aa", "æ": "ae"}))
+    return {v for v in (v1, v2, v3) if 3 <= len(v) <= 40}
+
+
 def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     """(host, method) pairs, best first. Method decides how strict the identity gate must be."""
     out: list[tuple[str, str]] = []
+    
+    # 1. Registered email domains (from registry bulk, live, and subunits)
+    emails: list[str] = []
     raw = (profile.get("evidence", {}).get("registry", {}).get("value") or {})
-    email = str(raw.get("epostadresse") or "")
-    if "@" in email:
-        domain = email.rsplit("@", 1)[1].strip().lower()
-        if domain and domain not in FREE_MAIL and "." in domain:
-            out.append((domain, "registry_email_domain"))
+    live = (profile.get("evidence", {}).get("registry_live", {}).get("value") or {})
+    if raw.get("epostadresse"):
+        emails.append(str(raw["epostadresse"]))
+    if live.get("email"):
+        emails.append(str(live["email"]))
+    for loc in (profile.get("evidence", {}).get("locations", {}).get("value") or {}).get("locations", []):
+        if loc.get("email"):
+            emails.append(str(loc["email"]))
+
+    for em in emails:
+        if "@" in em:
+            d = em.rsplit("@", 1)[1].strip().lower()
+            if d and d not in FREE_MAIL and "." in d:
+                out.append((d, "registry_email_domain"))
+                # If subdomain (e.g. mail.firma.no), also add root domain
+                parts = d.split(".")
+                if len(parts) > 2 and parts[-1] in {"no", "com", "org", "net"}:
+                    root_d = ".".join(parts[-2:])
+                    if root_d not in FREE_MAIL:
+                        out.append((root_d, "registry_email_domain"))
+
+    # 2. Name slug candidates with Norwegian vowel digraphs and generic token stripping
     tokens = _tokens(profile.get("name"))
     if tokens:
-        slugs = {"".join(tokens), "-".join(tokens)}
-        for slug in sorted(slugs, key=len):
-            if 4 <= len(slug) <= 40:
+        token_sets = [tokens]
+        # Core tokens without generic corporate terms (e.g. 'holding', 'invest')
+        core = [t for t in tokens if t not in GENERIC_SLUG_TOKENS]
+        if core and len(core) < len(tokens) and len(core) >= 1:
+            token_sets.append(core)
+
+        for tset in token_sets:
+            joined = "".join(tset)
+            hyphen = "-".join(tset)
+            all_forms = _slug_variants(joined)
+            if len(tset) > 1:
+                all_forms.update(_slug_variants(hyphen))
+            for slug in sorted(all_forms, key=len):
                 for tld in ("no", "com"):
                     out.append((f"{slug}.{tld}", "name_slug_guess"))
+
     seen, unique = set(), []
     for host, method in out:
         if host not in seen:
             seen.add(host)
             unique.append((host, method))
-    return unique[:5]
+    return unique[:6]
 
 
 def discover_website(profile: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, int]]:
@@ -73,7 +120,7 @@ def discover_website(profile: dict[str, Any]) -> tuple[dict[str, Any] | None, di
         org_proof = assessment.get("score") == 1.0
         if method == "registry_email_domain":
             ok = assessment.get("publishable")
-        else:  # guessed domain: demand hard proof of the exact legal entity
+        else:  # guessed domain or search candidate: demand hard proof of the exact legal entity
             ok = org_proof
             if not ok and assessment.get("publishable"):
                 proof, pm = hard_identity_proof(profile, record)
@@ -94,7 +141,7 @@ PROOF_PATHS = ("/kontakt", "/kontakt-oss", "/om-oss", "/om", "/contact", "/about
                "/privacy", "/privacy-policy", "/vilkar", "/vilkaar", "/handlebetingelser", "/salgsbetingelser", "/impressum", "/cookies")
 PROOF_LINK_TERMS = ("kontakt", "contact", "om-oss", "omoss", "om oss", "about", "personvern", "privacy", "vilk", "terms", "betingelser",
                     "impressum", "cookie", "fakturering", "selskap", "company")
-MAX_PROOF_PAGES = 10
+MAX_PROOF_PAGES = 6
 
 
 def _proof_links(root: str, html: str) -> list[str]:
@@ -112,17 +159,66 @@ def _proof_links(root: str, html: str) -> list[str]:
     return found
 
 
+def _extract_company_proof_targets(profile: dict[str, Any]) -> dict[str, Any]:
+    targets: dict[str, Any] = {
+        "org": re.sub(r"\D", "", str(profile.get("organisation_number") or "")),
+        "streets": [],
+        "zipc": "",
+        "phones": [],
+        "leadership": [],
+    }
+    # from registry_live
+    live = (profile.get("evidence", {}).get("registry_live", {}).get("value") or {})
+    b_addr = live.get("business_address") or {}
+    p_addr = live.get("postal_address") or {}
+    for addr in (b_addr, p_addr):
+        if isinstance(addr, dict):
+            for line in (addr.get("adresse") or []):
+                if isinstance(line, str) and len(line.strip()) >= 3:
+                    targets["streets"].append(line.strip().casefold())
+            if not targets["zipc"] and addr.get("postnummer"):
+                targets["zipc"] = str(addr.get("postnummer")).strip()
+    if live.get("phone"):
+        digits = re.sub(r"\D", "", str(live.get("phone")))
+        if len(digits) >= 8:
+            targets["phones"].append(digits[-8:])
+
+    # from raw registry
+    raw = (profile.get("evidence", {}).get("registry", {}).get("value") or {})
+    for key, val in raw.items():
+        if "adresse" in key and isinstance(val, str) and len(val.strip()) >= 3:
+            targets["streets"].append(val.strip().casefold())
+        if "postnummer" in key and isinstance(val, str) and not targets["zipc"]:
+            targets["zipc"] = val.strip()
+        if ("telefon" in key or "mobil" in key) and isinstance(val, str):
+            digits = re.sub(r"\D", "", val)
+            if len(digits) >= 8:
+                targets["phones"].append(digits[-8:])
+
+    # from roles (DAGL / LEDE names)
+    roles = (profile.get("evidence", {}).get("roles", {}).get("value") or {}).get("roles", [])
+    for r in roles:
+        if r.get("role_code") in {"DAGL", "LEDE"} and r.get("name"):
+            n = str(r.get("name")).strip()
+            if len(n) >= 5 and " " in n:
+                targets["leadership"].append(n.casefold())
+
+    targets["streets"] = list(dict.fromkeys(targets["streets"]))
+    targets["phones"] = list(dict.fromkeys(targets["phones"]))
+    targets["leadership"] = list(dict.fromkeys(targets["leadership"]))
+    return targets
+
+
 def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any]) -> tuple[str | None, dict[str, int]]:
-    """Exact org number, or registered street address + postcode, printed on the company's own pages.
+    """Exact org number, or registered street address + postcode. Phone/leader matches are NOT proof (sister companies share them).
 
     Looks at the homepage, then contact/about/legal pages linked from it, then a short list of conventional paths.
     The org number must stand alone (not be part of a longer digit string) so a phone number cannot match.
     """
     metrics = {"requests": 0}
-    org = re.sub(r"\D", "", str(profile.get("organisation_number") or ""))
-    raw = (profile.get("evidence", {}).get("registry", {}).get("value") or {})
-    street = str(raw.get("forretningsadresse.adresse") or "").strip().casefold()
-    zipc = str(raw.get("forretningsadresse.postnummer") or "").strip()
+    targets = _extract_company_proof_targets(profile)
+    org = targets["org"]
+    zipc = targets["zipc"]
     base = website.get("source_url") or ""
     parsed = urllib.parse.urlparse(base)
     root = f"{parsed.scheme}://{parsed.netloc}"
@@ -146,20 +242,20 @@ def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any]) -> tup
             continue
         html = body.decode("utf-8", errors="replace")
         text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
-        squeezed = re.sub(r"(?<=\d)[ . ](?=\d)", "", text)
-        raw_squeezed = re.sub(r"(?<=\d)[ . ](?=\d)", "", html)
+        squeezed = re.sub(r"(?<=\d)[ . \-_](?=\d)", "", text)
+        raw_squeezed = re.sub(r"(?<=\d)[ . \-_](?=\d)", "", html)
         if org_re and (org_re.search(squeezed) or org_re.search(raw_squeezed)):
             return f"exact organisation number printed on {url}", metrics
-        if street and len(street) >= 6 and zipc and street in text.casefold() and re.search(rf"(?<!\d){zipc}(?!\d)", text):
+        if zipc and any(len(s) >= 6 and s in text.casefold() for s in targets["streets"]) and re.search(rf"(?<!\d){zipc}(?!\d)", text):
             return f"registered street address and postcode printed on {url}", metrics
         if first_html is None:
             first_html = html
-            queue.extend(_proof_links(root, html)[:6])
+            queue.extend(_proof_links(root, html)[:4])
             queue.extend(root + path for path in PROOF_PATHS)
     return None, metrics
 
 
-def _get(url: str, timeout: float = 12.0, max_bytes: int = 800_000) -> tuple[bytes | None, str | None]:
+def _get(url: str, timeout: float = 6.0, max_bytes: int = 800_000) -> tuple[bytes | None, str | None]:
     try:
         assert_public_url(url)
         if not _robots_allowed(url, timeout):
