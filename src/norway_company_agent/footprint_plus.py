@@ -193,6 +193,17 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     return (no_hosts + other_hosts)[:16]
 
 
+def _accept_proof(proof: str | None, assessment: dict[str, Any], method: str) -> bool:
+    """Exact org number always proves the entity. Address+postcode alone does not: managers, landlords and
+    federations share a registered address, so it is accepted only on a guessed/search domain whose page also
+    carries most of the legal name, never on a registry e-mail domain (often the manager's own site)."""
+    if not proof:
+        return False
+    if proof.startswith("exact organisation number"):
+        return True
+    return method != "registry_email_domain" and assessment.get("score", 0) >= 0.85
+
+
 def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3) -> tuple[dict[str, Any] | None, dict[str, int]]:
     metrics = {"requests": 0, "bytes": 0}
     tested = 0
@@ -209,31 +220,19 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3) -> tupl
             continue
         gated = apply_website_identity_gate(profile, record)
         assessment = gated["assessment"] or {}
-        org_proof = assessment.get("score") == 1.0
-        if method == "registry_email_domain":
-            ok = assessment.get("publishable")
-            if not ok and assessment.get("score", 0) >= 0.3:
-                proof, pm = hard_identity_proof(profile, record)
-                metrics["requests"] += pm["requests"]
-                ok = proof is not None
-                if ok:
-                    assessment["publishable"] = True
-                    assessment["score"] = 1.0
-                    assessment["status"] = "exact"
-                    assessment["reasons"] = list(assessment.get("reasons", [])) + [proof]
-                    record.setdefault("value", {})["identity_assessment"] = assessment
-        else:  # guessed domain or search candidate: demand hard proof of the exact legal entity
-            ok = org_proof
-            if not ok and assessment.get("score", 0) >= 0.3:
-                proof, pm = hard_identity_proof(profile, record)
-                metrics["requests"] += pm["requests"]
-                ok = proof is not None
-                if ok:
-                    assessment["publishable"] = True
-                    assessment["score"] = 1.0
-                    assessment["status"] = "exact"
-                    assessment["reasons"] = list(assessment.get("reasons", [])) + [proof]
-                    record.setdefault("value", {})["identity_assessment"] = assessment
+        ok = bool(assessment.get("publishable")) if method == "registry_email_domain" else assessment.get("score") == 1.0
+        if not ok and assessment.get("score", 0) >= 0.3:
+            weak = assessment.get("score", 0) < 0.5
+            proof, pm = hard_identity_proof(profile, record, WEAK_CANDIDATE_PROOF_PAGES if weak else MAX_PROOF_PAGES)
+            metrics["requests"] += pm["requests"]
+            ok = _accept_proof(proof, assessment, method)
+            if ok:
+                exact = proof.startswith("exact organisation number")
+                assessment["publishable"] = True
+                assessment["score"] = 1.0 if exact else 0.9
+                assessment["status"] = "exact" if exact else "review"
+                assessment["reasons"] = list(assessment.get("reasons", [])) + [proof]
+                record.setdefault("value", {})["identity_assessment"] = assessment
         if not ok:
             if tested >= max_tested_hosts:
                 break
@@ -249,7 +248,8 @@ PROOF_PATHS = ("/kontakt", "/kontakt-oss", "/om-oss", "/om", "/contact", "/about
                "/privacy", "/privacy-policy", "/vilkar", "/vilkaar", "/handlebetingelser", "/salgsbetingelser", "/impressum", "/cookies")
 PROOF_LINK_TERMS = ("kontakt", "contact", "om-oss", "omoss", "om oss", "about", "personvern", "privacy", "vilk", "terms", "betingelser",
                     "impressum", "cookie", "fakturering", "selskap", "company")
-MAX_PROOF_PAGES = 6
+MAX_PROOF_PAGES = 4
+WEAK_CANDIDATE_PROOF_PAGES = 2  # name score < 0.5: most such pages are look-alikes, keep the proof cheap
 
 
 def _proof_links(root: str, html: str) -> list[str]:
@@ -297,7 +297,7 @@ def _extract_company_proof_targets(profile: dict[str, Any]) -> dict[str, Any]:
     return targets
 
 
-def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any]) -> tuple[str | None, dict[str, int]]:
+def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any], max_pages: int = MAX_PROOF_PAGES) -> tuple[str | None, dict[str, int]]:
     """Exact org number, or registered street address + postcode. Phone/leader matches are NOT proof (sister companies share them).
 
     Looks at the homepage, then contact/about/legal pages linked from it, then a short list of conventional paths.
@@ -315,7 +315,7 @@ def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any]) -> tup
     queue = [base]
     fetched = 0
     first_html = None
-    while queue and fetched < MAX_PROOF_PAGES:
+    while queue and fetched < max_pages:
         url = queue.pop(0)
         if url in seen:
             continue

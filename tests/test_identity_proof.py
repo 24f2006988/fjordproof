@@ -109,6 +109,41 @@ class HardProofTests(unittest.TestCase):
         self.assertEqual(v["dated_activity"][0]["title"], "Hei & velkommen")
         self.assertEqual(v["dated_activity"][0]["date"], "2026-08-15")
 
+    def test_accept_proof_rules(self):
+        org = "exact organisation number printed on https://x.no/"
+        adr = "registered street address and postcode printed on https://x.no/"
+        self.assertTrue(footprint_plus._accept_proof(org, {"score": 0.3}, "registry_email_domain"))
+        self.assertTrue(footprint_plus._accept_proof(org, {"score": 0.65}, "brand_token_guess"))
+        self.assertFalse(footprint_plus._accept_proof(adr, {"score": 0.95}, "registry_email_domain"))
+        self.assertFalse(footprint_plus._accept_proof(adr, {"score": 0.65}, "brand_token_guess"))
+        self.assertTrue(footprint_plus._accept_proof(adr, {"score": 0.85}, "name_slug_guess"))
+        self.assertFalse(footprint_plus._accept_proof(None, {"score": 1.0}, "name_slug_guess"))
+
+    def _discover(self, method, score, proof):
+        profile = {"organisation_number": "985589003", "name": "BONDELIA I BORETTSLAG", "evidence": {}}
+        record = {"status": "available", "source_url": "https://www.gobb.no/", "value": {}}
+        with mock.patch.object(footprint_plus, "candidate_hosts", lambda p: [("gobb.no", method)]), \
+             mock.patch.object(footprint_plus, "_resolves", lambda h: True), \
+             mock.patch.object(footprint_plus, "fetch_website", lambda h, **k: (dict(record), {"requests": 1, "bytes": 1})), \
+             mock.patch.object(footprint_plus, "apply_website_identity_gate", lambda p, r: {"assessment": {"score": score, "publishable": score >= 0.9, "reasons": []}}), \
+             mock.patch.object(footprint_plus, "hard_identity_proof", lambda p, r, *a: (proof, {"requests": 1, "bytes": 0})):
+            return footprint_plus.discover_website(profile)[0]
+
+    def test_housing_manager_site_via_registry_email_with_address_only_is_rejected(self):
+        adr = "registered street address and postcode printed on https://www.gobb.no/"
+        self.assertIsNone(self._discover("registry_email_domain", 0.85, adr))
+
+    def test_registry_email_site_with_exact_org_number_is_accepted(self):
+        rec = self._discover("registry_email_domain", 0.85, "exact organisation number printed on https://www.gobb.no/")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["value"]["identity_assessment"]["score"], 1.0)
+
+    def test_guessed_domain_address_only_needs_strong_name_match(self):
+        adr = "registered street address and postcode printed on https://www.gobb.no/"
+        self.assertIsNone(self._discover("brand_token_guess", 0.65, adr))
+        rec = self._discover("name_slug_guess", 0.85, adr)
+        self.assertEqual(rec["value"]["identity_assessment"]["score"], 0.9)
+
     def test_phone_or_leader_alone_is_not_proof(self):
         profile = {
             "organisation_number": "985589003",
