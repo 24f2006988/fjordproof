@@ -107,6 +107,13 @@ def main() -> None:
         except Exception as exc:  # never drop a company
             profile["evidence"]["external_footprint"] = evidence("external_footprint", "source_error", "company_owned_site",
                                                                   "https://builderr.ai", note=f"{type(exc).__name__}: {str(exc)[:150]}")
+        site = profile["evidence"].get("website", {})
+        if site.get("status") == "available" and (site.get("value", {}).get("identity_assessment") or {}).get("publishable") is not True:
+            # Fetched but identity not proven for this exact entity: do not carry the URL anywhere in the output.
+            profile["evidence"]["website"] = evidence(
+                "website", "not_found", "registry_linked_company_website", "https://data.brreg.no/enhetsregisteret/api/enheter",
+                note="A website listed for this company was fetched but its identity could not be proven; nothing published.")
+            profile["website"] = None
         budget.record_requests(extra["requests"])
         profile.setdefault("run_metrics", {})["plus_requests"] = extra["requests"]
         profile["changes_since_previous"] = material_changes(previous.get(profile["organisation_number"]), profile)
