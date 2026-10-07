@@ -55,6 +55,7 @@ def main() -> None:
     p.add_argument("--outdir", default="out")
     p.add_argument("--previous", help="previous envelopes JSONL (snapshot is preserved; changes are reported)")
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--plus-workers", type=int, default=24, help="threads for website discovery/footprint (many different hosts; Brreg is not hit here)")
     p.add_argument("--max-runtime-seconds", type=float, default=2400.0, help="maximum wallclock runtime in seconds (default: 2400 = 40m)")
     p.add_argument("--max-requests", type=int, default=None, help="maximum outbound requests (default: batch scaled)")
     a = p.parse_args()
@@ -111,7 +112,7 @@ def main() -> None:
         profile["changes_since_previous"] = material_changes(previous.get(profile["organisation_number"]), profile)
         return profile
 
-    with ThreadPoolExecutor(a.workers) as pool:
+    with ThreadPoolExecutor(a.plus_workers) as pool:
         profiles = list(pool.map(plus, profiles))
     completed = utc_now()
     envelopes = [terminal_envelope(pr, run_id=a.run_id, modules=MODULES.split(","), started_at=report["started_at"], completed_at=completed) for pr in profiles]
