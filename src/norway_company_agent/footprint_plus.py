@@ -488,7 +488,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     source = website.get("source_url") or ""
     value = website.get("value") or {}
     if website.get("status") != "available" or (value.get("identity_assessment") or {}).get("publishable") is not True:
-        return evidence("external_footprint", "not_found", "company_owned_site", source or "https://data.brreg.no",
+        return evidence("external_footprint", "not_found", "company_owned_site", "https://data.brreg.no",
                         note="No identity-verified company website; nothing published."), metrics
     raw, final = _get(source)
     metrics["requests"] += 2
