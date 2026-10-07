@@ -209,8 +209,10 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
 
     # Granular website details
     web_rec = records.get("website", {})
-    web_ok = web_rec.get("status") == "available"
     web_val = web_rec.get("value") or {}
+    # A fetched site whose identity is not proven for this exact legal entity is never published (wrong-company risk).
+    web_ambiguous = web_rec.get("status") == "available" and (web_val.get("identity_assessment") or {}).get("publishable") is not True
+    web_ok = web_rec.get("status") == "available" and not web_ambiguous
     web_conf = 0.9 if web_ok else 0.0
     if web_ok and web_rec.get("source_type") == "registry_linked_company_website":
         score = (web_val.get("identity_assessment") or {}).get("score")
@@ -222,7 +224,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         claims.append({
             "field": fld,
             "value": val if present else None,
-            "availability": "available" if present else ("not_available" if web_rec.get("status") in {"available", "not_found"} else "failed"),
+            "availability": "available" if present else ("ambiguous" if web_ambiguous else "not_available" if web_rec.get("status") in {"available", "not_found"} else "failed"),
             "confidence": web_conf if present else 0.0,
             "evidence_ids": ["ev-website"] if present and "website" in records else [],
         })
@@ -269,6 +271,8 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             claims.append({"field": field, "value": None, "availability": "failed", "confidence": 0.0, "evidence_ids": []})
             continue
         availability = AVAILABILITY.get(rec.get("status"), "failed")
+        if module == "website" and web_ambiguous:
+            availability = "ambiguous"
         value = rec.get("value")
         if module == "website":
             value = rec.get("source_url") if availability == "available" else None

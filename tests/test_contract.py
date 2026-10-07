@@ -47,6 +47,14 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertIsNone(claims["employees"]["value"])
         self.assertEqual(claims["official_website"]["availability"], "not_available")
 
+    def test_unproven_website_identity_is_never_published(self):
+        env = self.make("available")  # fixture site has no identity_assessment => not proven
+        claims = {c["field"]: c for c in env["claims"]}
+        self.assertEqual(claims["official_website"]["availability"], "ambiguous")
+        self.assertIsNone(claims["official_website"]["value"])
+        self.assertEqual(claims["official_website"]["confidence"], 0.0)
+        self.assertEqual(claims["website_title"]["availability"], "ambiguous")
+
     def test_granular_claims_coverage(self):
         profile = {
             "organisation_number": "123456789", "name": "Eksempel AS", "legal_form": "AS", "employees": 5,
@@ -63,7 +71,7 @@ class ContractAdapterTest(unittest.TestCase):
                 "locations": evidence("locations", "available", "official_subunits", "https://data.brreg.no/enhetsregisteret/api/underenheter?overordnetEnhet=123456789",
                                       value={"locations": [{"organisation_number": "987654321", "name": "Eksempel Avd"}]}),
                 "website": evidence("website", "available", "discovered_company_website", "https://eksempel.no/",
-                                    value={"title": "Eksempel AS Hjemmeside", "description": "Vi leverer programvare"}),
+                                    value={"title": "Eksempel AS Hjemmeside", "description": "Vi leverer programvare", "identity_assessment": {"publishable": True, "score": 1.0}}),
                 "external_footprint": evidence("external_footprint", "available", "company_owned_site", "https://eksempel.no/",
                                                value={"careers_urls": ["https://eksempel.no/karriere"], "news_pages": ["https://eksempel.no/nyheter"], "social_links": [{"platform": "linkedin", "url": "https://linkedin.com/company/eksempel"}], "contact": {"email": "hei@eksempel.no"}}),
             },
