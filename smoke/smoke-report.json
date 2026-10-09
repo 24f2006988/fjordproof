@@ -1,7 +1,7 @@
 {
-  "run_id": "smoke-016",
-  "started_at": "2026-10-07T05:33:54.755521Z",
-  "completed_at": "2026-10-07T05:43:12.482948Z",
+  "run_id": "smoke-019",
+  "started_at": "2026-10-09T11:58:26.694211Z",
+  "completed_at": "2026-10-09T12:04:25.435683Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -26,10 +26,10 @@
     "bulk_note": "bulk snapshot not supplied"
   },
   "operations": {
-    "requests": 1661,
-    "bytes": 2619986,
-    "p50_ms": 1297,
-    "p95_ms": 4282,
+    "requests": 1651,
+    "bytes": 2619972,
+    "p50_ms": 1219,
+    "p95_ms": 2733,
     "third_party_cost_usd": 0,
     "budget_exhausted": false
   },
