@@ -42,6 +42,9 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
 
     evidence = []
     for name, rec in records.items():
+        # A checked-and-empty source with no fetched bytes has no content hash; never invent one (sha256("null")).
+        if not rec.get("content_sha256") and rec.get("status") != "available":
+            continue
         evidence.append(
             {
                 "id": f"ev-{name}",
@@ -233,7 +236,25 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     fp_rec = records.get("external_footprint", {})
     fp_ok = fp_rec.get("status") == "available"
     fp_val = fp_rec.get("value") or {}
-    for fld, key in (("careers_urls", "careers_urls"), ("news_urls", "news_pages"), ("social_profiles", "social_links"), ("site_contact", "contact"), ("dated_activity", "dated_activity")):
+    item_sources = fp_val.get("item_sources") or {}
+
+    def fp_evidence(*source_keys: str) -> list[str]:
+        """One evidence record per (field, page) that really contains the published items."""
+        groups: dict[tuple[str, str, str], list[str]] = {}
+        for sk in source_keys:
+            for it in item_sources.get(sk, []):
+                groups.setdefault((sk, it["source_url"], it["sha256"]), []).append(it["span"])
+        ids = []
+        for (sk, url, sha), spans in groups.items():
+            eid = f"ev-fp-{sk}-{len(evidence)}"
+            evidence.append({"id": eid, "source_url": url, "source_class": "company_owned_site", "retrieved_at": fp_rec.get("retrieved_at"),
+                             "content_sha256": sha, "claim_span": " | ".join(spans)[:240]})
+            ids.append(eid)
+        return ids or (["ev-external_footprint"] if "external_footprint" in records else [])
+
+    for fld, key, sks in (("careers_urls", "careers_urls", ("careers_urls",)), ("news_urls", "news_pages", ("news_pages",)),
+                          ("social_profiles", "social_links", ("social_links",)), ("site_contact", "contact", ("contact_email", "contact_phone")),
+                          ("dated_activity", "dated_activity", ("dated_activity",))):
         val = fp_val.get(key)
         present = fp_ok and val not in (None, "", [], {})
         claims.append({
@@ -241,10 +262,10 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             "value": val if present else None,
             "availability": "available" if present else ("not_available" if fp_rec.get("status") in {"available", "not_found"} else "failed"),
             "confidence": 0.80 if present else 0.0,
-            "evidence_ids": ["ev-external_footprint"] if present and "external_footprint" in records else [],
+            "evidence_ids": fp_evidence(*sks) if present else [],
         })
     contact_dict = fp_val.get("contact") or {}
-    for cfld, ckey in (("site_email", "email"), ("site_phone", "phone")):
+    for cfld, ckey, csk in (("site_email", "email", "contact_email"), ("site_phone", "phone", "contact_phone")):
         cval = contact_dict.get(ckey)
         cpresent = fp_ok and cval not in (None, "")
         claims.append({
@@ -252,7 +273,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             "value": cval if cpresent else None,
             "availability": "available" if cpresent else ("not_available" if fp_rec.get("status") in {"available", "not_found"} else "failed"),
             "confidence": 0.80 if cpresent else 0.0,
-            "evidence_ids": ["ev-external_footprint"] if cpresent and "external_footprint" in records else [],
+            "evidence_ids": fp_evidence(csk) if cpresent else [],
         })
     jobs_val = fp_val.get("job_postings") or []
     jobs_present = fp_ok and bool(jobs_val)
@@ -261,7 +282,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         "value": jobs_val if jobs_present else None,
         "availability": "available" if jobs_present else ("not_available" if fp_rec.get("status") in {"available", "not_found"} else "failed"),
         "confidence": 0.80 if jobs_present else 0.0,
-        "evidence_ids": ["ev-external_footprint"] if jobs_present and "external_footprint" in records else [],
+        "evidence_ids": fp_evidence("job_postings") if jobs_present else [],
     })
 
     # Baseline module claims (preserving existing contract compatibility)
@@ -289,6 +310,10 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
                 "evidence_ids": [f"ev-{module}"],
             }
         )
+
+    known = {e["id"] for e in evidence}
+    for claim in claims:
+        claim["evidence_ids"] = [i for i in claim["evidence_ids"] if i in known]
 
     errors = [
         {"module": module, "state": state["state"], "message": str((records.get(module) or {}).get("note") or "")[:200]}

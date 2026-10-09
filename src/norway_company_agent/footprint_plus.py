@@ -5,6 +5,7 @@ number are published. Everything else stays `not_found`. Uses the starter's SSRF
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -24,8 +25,6 @@ FREE_MAIL = {"gmail.com", "hotmail.com", "outlook.com", "live.com", "yahoo.com",
              "msn.com", "me.com", "hotmail.no", "outlook.no", "live.no", "yahoo.no", "getmail.no", "start.no",
              "broadpark.no", "frisurf.no", "c2i.net", "lyse.net", "powertech.no", "tele2.no", "altibox.no",
              "proton.me", "protonmail.com", "bbhosting.no"}
-CAREER_TERMS = ("karriere", "career", "ledige-stillinger", "ledige stillinger", "jobs", "jobb", "rekruttering", "stilling")
-NEWS_TERMS = ("nyheter", "news", "aktuelt", "blogg", "blog", "presse", "press")
 
 
 GENERIC_SLUG_TOKENS = {
@@ -360,25 +359,59 @@ def _get(url: str, timeout: float = 6.0, max_bytes: int = 800_000) -> tuple[byte
 import urllib.request  # noqa: E402  (kept after helpers to keep imports grouped above minimal)
 
 
-SITEMAP_NEWS_RE = re.compile(r"(nyhet|news|blogg?|aktuelt|presse|press|artikkel|innlegg|post)", re.I)
-SITEMAP_CAREER_RE = re.compile(r"(karriere|career|ledige-stillinger|stillinger|jobb|jobs)", re.I)
+NEWS_SEGMENTS = {"nyheter", "news", "aktuelt", "blogg", "blog", "presse", "press", "pressemeldinger", "artikler", "innlegg", "post", "posts"}
+NOT_NEWS_SEGMENTS = {"produkt", "produkter", "product", "products", "shop", "butikk", "kategori", "category", "collections", "brands", "merker"}
+CAREER_SEGMENTS = {"karriere", "career", "careers", "ledige-stillinger", "stillinger", "rekruttering", "jobs", "job", "jobb"}
+CAREER_TEXT_RE = re.compile(r"\b(karriere|careers?|ledige stillinger|rekruttering|jobs?|jobb)\b", re.I)
+NEWS_TEXT_RE = re.compile(r"\b(nyheter|news|aktuelt|blogg|blog|presse|press)\b", re.I)
+SITEMAP_NEWS_FILE_RE = re.compile(r"(nyhet|news|blogg?|aktuelt|presse|press|artikkel|innlegg|post)", re.I)
 PHONE_LABEL_RE = re.compile(r"(?:tlf|tel|telefon|mobil|ring(?:\s+oss)?)\b[\s.:]*((?:\+\s?47|0047)?[\s.]?(?:\d[\s.]?){8})", re.I)
+
+
+def _segments(path: str) -> list[str]:
+    return [s.casefold() for s in path.split("/") if s]
+
+
+def _is_career(path: str, text: str = "") -> bool:
+    """Careers entry point: a whole path segment or whole anchor word, never a substring ('faa-jobben-gjort')."""
+    return any(s in CAREER_SEGMENTS for s in _segments(path)) or bool(CAREER_TEXT_RE.search(text))
+
+
+def _is_news(path: str, text: str = "") -> bool:
+    """News section: whole path segment or anchor word, and not a product/shop category called 'nyheter'."""
+    segs = _segments(path)
+    if any(s in NOT_NEWS_SEGMENTS for s in segs):
+        return False
+    if segs and re.fullmatch(r"[a-z]{2}(-[a-z]{2})?", segs[0]):
+        segs = segs[1:]  # language prefix: /no/nyheter
+    # A news section is top-level (/nyheter, /blogg/slug); '/tapet/fibertapet/nyheter' is a product listing.
+    return bool(segs and segs[0] in NEWS_SEGMENTS) or (len(segs) <= 1 and bool(NEWS_TEXT_RE.search(text)))
+
+
+def _sha(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _clean_contact(value: str, limit: int) -> str:
     return re.sub(r"\s+", "", urllib.parse.unquote(value)).strip()[:limit]
 
 
-def _phone_from_text(text: str) -> str | None:
-    """A Norwegian number printed next to a phone label on a verified company page."""
+def _norm_phone(value: str) -> str | None:
+    """Canonical +47XXXXXXXX for a valid Norwegian number; anything else is not published."""
+    digits = re.sub(r"\D", "", urllib.parse.unquote(value))
+    if digits.startswith("0047"):
+        digits = digits[4:]
+    elif digits.startswith("47") and len(digits) == 10:
+        digits = digits[2:]
+    return "+47" + digits if len(digits) == 8 and digits[0] in "23456789" else None
+
+
+def _phone_from_text(text: str) -> tuple[str, str] | None:
+    """A Norwegian number printed next to a phone label on a verified company page: (number, literal snippet)."""
     for m in PHONE_LABEL_RE.finditer(text):
-        digits = re.sub(r"\D", "", m.group(1))
-        if digits.startswith("0047"):
-            digits = digits[4:]
-        elif digits.startswith("47") and len(digits) == 10:
-            digits = digits[2:]
-        if len(digits) == 8 and digits[0] in "23456789":
-            return "+47" + digits
+        phone = _norm_phone(m.group(1))
+        if phone:
+            return phone, m.group(0).strip()[:160]
     return None
 
 
@@ -401,8 +434,11 @@ def _sitemap_entries(raw: bytes) -> tuple[str, list[tuple[str, str]]]:
     return kind, rows
 
 
-def _sitemap_signals(final: str, host: str) -> tuple[list[str], list[str], list[dict[str, str]], int]:
-    """Careers/news entry points and dated posts from the verified site's own sitemap (<= 4 fetches)."""
+def _sitemap_signals(final: str, host: str) -> tuple[list[str], list[str], list[dict[str, str]], int, dict[str, dict[str, str]]]:
+    """Careers/news entry points and dated posts from the verified site's own sitemap (<= 4 fetches).
+
+    The last value maps each returned URL to the sitemap file it was read from (url, sha256, literal <loc> span).
+    """
     origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlparse(final))
     requests = 1
     robots, _ = _get(origin + "/robots.txt", timeout=5.0)
@@ -411,6 +447,7 @@ def _sitemap_signals(final: str, host: str) -> tuple[list[str], list[str], list[
     careers: list[str] = []
     news: list[str] = []
     dated: list[dict[str, str]] = []
+    prov: dict[str, dict[str, str]] = {}
     fetched = 0
     while queue and fetched < 3:
         sm_url = queue.pop(0)
@@ -421,39 +458,43 @@ def _sitemap_signals(final: str, host: str) -> tuple[list[str], list[str], list[
             continue
         kind, rows = _sitemap_entries(raw)
         if kind == "sitemapindex":
-            wanted = [loc for loc, _ in rows if _same_site(loc, host) and SITEMAP_NEWS_RE.search(loc)]
+            wanted = [loc for loc, _ in rows if _same_site(loc, host) and SITEMAP_NEWS_FILE_RE.search(loc)]
             queue.extend(wanted[:2])
             continue
         for loc, mod in rows:
             if not _same_site(loc, host):
                 continue
             path = urllib.parse.urlparse(loc).path
-            if SITEMAP_CAREER_RE.search(path) and loc not in careers:
+            src = {"source_url": sm_final or sm_url, "sha256": _sha(raw), "span": f"<loc>{loc}</loc>"[:240]}
+            if _is_career(path) and loc not in careers:
                 careers.append(loc)
-            if SITEMAP_NEWS_RE.search(path) and path.strip("/") and loc not in news:
+                prov[loc] = src
+            if _is_news(path) and len(_segments(path)) >= 2 and loc not in news:
                 news.append(loc)
+                prov[loc] = src
                 slug = path.rstrip("/").rsplit("/", 1)[-1]
                 if mod and re.match(r"\d{4}-\d{2}-\d{2}", mod) and slug and not slug.isdigit():
                     dated.append({"title": slug.replace("-", " ").replace("_", " ")[:200], "url": loc, "date": mod,
                                   "date_kind": "sitemap_lastmod", "title_source": "url_slug"})
     dated.sort(key=lambda d: d["date"], reverse=True)
-    return careers[:4], news[:3], dated[:5], requests
+    return careers[:4], news[:3], dated[:5], requests, prov
 
 
-def _wp_posts(final: str) -> list[dict[str, str]]:
+def _wp_posts(final: str) -> tuple[list[dict[str, str]], dict[str, str] | None]:
     origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlparse(final))
-    raw, _ = _get(origin + "/wp-json/wp/v2/posts?per_page=5&_fields=date,link,title", timeout=5.0)
+    api = origin + "/wp-json/wp/v2/posts?per_page=5&_fields=date,link,title"
+    raw, api_final = _get(api, timeout=5.0)
     try:
         data = json.loads(raw or b"[]")
     except ValueError:
-        return []
+        return [], None
     items = []
     for post in data if isinstance(data, list) else []:
         title = ((post.get("title") or {}).get("rendered") or "").strip()
         if title and post.get("link") and post.get("date"):
             items.append({"title": " ".join(BeautifulSoup(title, "lxml").get_text().split())[:200],
                           "url": str(post["link"]), "date": str(post["date"])[:10], "date_kind": "wp_rest_post_date"})
-    return items
+    return items, ({"source_url": api_final or api, "sha256": _sha(raw or b"")} if items else None)
 
 
 def _parse_feed(raw: bytes, base: str) -> list[dict[str, str]]:
@@ -483,7 +524,11 @@ def _parse_feed(raw: bytes, base: str) -> list[dict[str, str]]:
 
 
 def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
-    """Dated activity, careers entry points, contact and company-owned profiles from a VERIFIED website only."""
+    """Dated activity, careers entry points, contact and company-owned profiles from a VERIFIED website only.
+
+    ``item_sources`` records, per published item, the exact page it was read from (source_url, sha256 of the
+    bytes fetched, literal span) so every claim can cite the page that really contains it.
+    """
     metrics = {"requests": 0, "bytes": 0}
     source = website.get("source_url") or ""
     value = website.get("value") or {}
@@ -494,6 +539,12 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     metrics["requests"] += 2
     careers, news_pages, feeds, contact, job_postings = [], [], [], {}, []
     contact_links = []
+    item_sources: dict[str, list[dict[str, str]]] = {}
+
+    def note(field: str, item: str, src_url: str, sha: str, span: str) -> None:
+        item_sources.setdefault(field, []).append({"item": item, "source_url": src_url, "sha256": sha, "span": " ".join(span.split())[:240]})
+
+    home_sha = _sha(raw) if raw else ""
     if raw and final:
         metrics["bytes"] += len(raw)
         soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml")
@@ -503,64 +554,84 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             p = urllib.parse.urlparse(url)
             if p.scheme == "mailto" and "email" not in contact:
                 contact["email"] = _clean_contact(p.path, 120)
+                note("contact_email", contact["email"], final, home_sha, str(a))
             elif p.scheme == "tel" and "phone" not in contact:
-                contact["phone"] = _clean_contact(p.path, 40)
+                phone = _norm_phone(p.path)
+                if phone:
+                    contact["phone"] = phone
+                    note("contact_phone", phone, final, home_sha, str(a))
             if p.scheme not in {"http", "https"}:
                 continue
-            hay = (p.path + " " + a.get_text(" ", strip=True)).casefold()
+            text = a.get_text(" ", strip=True)
             if p.netloc.lower() == host:
-                if any(t in hay for t in CAREER_TERMS) and url not in careers:
+                if _is_career(p.path, text) and url not in careers:
                     careers.append(url)
-                if any(t in hay for t in NEWS_TERMS) and url not in news_pages:
+                    note("careers_urls", url, final, home_sha, str(a))
+                if _is_news(p.path, text) and url not in news_pages:
                     news_pages.append(url)
-                if any(t in hay for t in ("kontakt", "contact", "om-oss", "omoss")) and url not in contact_links and url.rstrip("/") != final.rstrip("/"):
+                    note("news_pages", url, final, home_sha, str(a))
+                if any(t in (p.path + " " + text).casefold() for t in ("kontakt", "contact", "om-oss", "omoss")) and url not in contact_links and url.rstrip("/") != final.rstrip("/"):
                     contact_links.append(url)
             elif any(d in p.netloc.lower() for d in ("finn.no", "webcruiter", "easycruit", "teamtailor", "recman", "varbi", "lever.co", "greenhouse.io")) \
-                    and any(t in hay for t in CAREER_TERMS + ("stilling", "finn")) and url not in careers:
+                    and (_is_career(p.path, text) or re.search(r"\b(stilling|stillinger|finn)\b", text, re.I)) and url not in careers:
                 careers.append(url)
+                note("careers_urls", url, final, home_sha, str(a))
         for link in soup.select('link[rel="alternate"][type*="rss"], link[rel="alternate"][type*="atom"]'):
             feeds.append(urllib.parse.urljoin(final, str(link.get("href") or "")))
         for s in soup.select('script[type="application/ld+json"]'):
             try:
-                jdata = json.loads(s.string or s.get_text() or "{}")
+                jtext = s.string or s.get_text() or "{}"
+                jdata = json.loads(jtext)
                 items = jdata if isinstance(jdata, list) else [jdata]
                 for item in items:
                     if not isinstance(item, dict):
                         continue
                     if "email" not in contact and item.get("email"):
                         contact["email"] = str(item["email"])[:120]
+                        note("contact_email", contact["email"], final, home_sha, jtext)
                     if "phone" not in contact and item.get("telephone"):
-                        contact["phone"] = str(item["telephone"])[:40]
+                        phone = _norm_phone(str(item["telephone"]))
+                        if phone:
+                            contact["phone"] = phone
+                            note("contact_phone", phone, final, home_sha, jtext)
                     if item.get("@type") == "JobPosting" and item.get("title"):
                         job_postings.append({
                             "title": str(item["title"])[:200],
                             "date_posted": str(item.get("datePosted") or "")[:20],
                             "employment_type": str(item.get("employmentType") or "")[:50],
                         })
+                        note("job_postings", str(item["title"])[:200], final, home_sha, jtext)
             except Exception:
                 pass
 
     if raw and final and "phone" not in contact:
-        text_phone = _phone_from_text(BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml").get_text(" ", strip=True))
-        if text_phone:
-            contact["phone"] = text_phone
+        found_phone = _phone_from_text(BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml").get_text(" ", strip=True))
+        if found_phone:
+            contact["phone"] = found_phone[0]
+            note("contact_phone", found_phone[0], final, home_sha, found_phone[1])
 
     if contact_links and (not contact.get("email") or not contact.get("phone")):
         craw, cfinal = _get(contact_links[0], timeout=5.0)
         metrics["requests"] += 1
         if craw:
+            csha, csrc = _sha(craw), cfinal or contact_links[0]
             csoup = BeautifulSoup(craw.decode("utf-8", errors="replace"), "lxml")
             for ca in csoup.select("a[href]"):
-                curl = urllib.parse.urljoin(cfinal or contact_links[0], str(ca.get("href") or ""))
+                curl = urllib.parse.urljoin(csrc, str(ca.get("href") or ""))
                 cp = urllib.parse.urlparse(curl)
                 if cp.scheme == "mailto" and "email" not in contact:
                     contact["email"] = _clean_contact(cp.path, 120)
+                    note("contact_email", contact["email"], csrc, csha, str(ca))
                 elif cp.scheme == "tel" and "phone" not in contact:
-                    contact["phone"] = _clean_contact(cp.path, 40)
+                    phone = _norm_phone(cp.path)
+                    if phone:
+                        contact["phone"] = phone
+                        note("contact_phone", phone, csrc, csha, str(ca))
             if "phone" not in contact:
-                text_phone = _phone_from_text(csoup.get_text(" ", strip=True))
-                if text_phone:
-                    contact["phone"] = text_phone
+                found_phone = _phone_from_text(csoup.get_text(" ", strip=True))
+                if found_phone:
+                    contact["phone"] = found_phone[0]
+                    note("contact_phone", found_phone[0], csrc, csha, found_phone[1])
 
     activity = []
     for feed in feeds[:2]:
@@ -568,23 +639,47 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         metrics["requests"] += 2
         if fraw:
             metrics["bytes"] += len(fraw)
-            activity += [{**item, "source_feed": ffinal} for item in _parse_feed(fraw, ffinal or feed)]
+            for item in _parse_feed(fraw, ffinal or feed):
+                activity.append({**item, "source_feed": ffinal})
+                note("dated_activity", item["url"], ffinal or feed, _sha(fraw), f"{item['title']} {item['date']}")
     if final:
         host = urllib.parse.urlparse(final).netloc.lower()
-        sm_careers, sm_news, sm_dated, sm_requests = _sitemap_signals(final, host)
+        sm_careers, sm_news, sm_dated, sm_requests, sm_prov = _sitemap_signals(final, host)
         metrics["requests"] += sm_requests
-        careers += [u for u in sm_careers if u not in careers]
-        news_pages += [u for u in sm_news if u not in news_pages]
+        for u in sm_careers:
+            if u not in careers:
+                careers.append(u)
+                note("careers_urls", u, sm_prov[u]["source_url"], sm_prov[u]["sha256"], sm_prov[u]["span"])
+        for u in sm_news:
+            if u not in news_pages:
+                news_pages.append(u)
+                note("news_pages", u, sm_prov[u]["source_url"], sm_prov[u]["sha256"], sm_prov[u]["span"])
         if not activity and raw and b"/wp-json/" in raw:
-            activity = _wp_posts(final)
+            activity, wp_src = _wp_posts(final)
             metrics["requests"] += 1
+            for item in activity:
+                note("dated_activity", item["url"], wp_src["source_url"], wp_src["sha256"], f"{item['title']} {item['date']}")
         if not activity:
             activity = sm_dated
+            for item in sm_dated:
+                p = sm_prov.get(item["url"])
+                if p:
+                    note("dated_activity", item["url"], p["source_url"], p["sha256"], p["span"])
+    social = []
+    page_text = raw.decode("utf-8", errors="replace") if raw else ""
+    for link in (value.get("social_links") or []):
+        url = str(link.get("url") if isinstance(link, dict) else link)
+        key = re.sub(r"^https?://(?:www\.)?", "", url, flags=re.I)
+        hit = re.search(r"[^\"'\s<>]*" + re.escape(key) + r"[^\"'\s<>]*", page_text, re.I) if (final and key) else None
+        if hit:
+            social.append(link)
+            note("social_links", url, final, home_sha, hit.group(0))
     found = bool(careers or activity or contact or news_pages or job_postings)
     return evidence(
         "external_footprint", "available" if found else "not_found", "company_owned_site", final or source,
         value={"careers_urls": careers[:4], "news_pages": news_pages[:3], "dated_activity": activity[:8],
-               "contact": contact, "social_links": (value.get("social_links") or []),
-               "job_postings": job_postings[:6]},
+               "contact": contact, "social_links": social,
+               "job_postings": job_postings[:6], "item_sources": item_sources},
         note="Extracted only from an identity-verified company-owned website; activity dates come from the site's own feed.",
+        content_sha256=home_sha or None,
     ), metrics
