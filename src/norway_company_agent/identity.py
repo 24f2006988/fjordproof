@@ -106,6 +106,14 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+GENERIC_DESCRIPTIVE_TOKENS = {
+    "markedsforing", "markedforing", "revisjon", "regnskap", "radgivning", "raadgivning",
+    "drift", "forvaltning", "service", "consulting", "management", "utvikling",
+    "partner", "partners", "gruppen", "group", "handel", "transport", "montasje",
+    "advokat", "arkitekt", "arkitektfirma", "entreprenor", "maler", "rorlegger", "elektriker",
+}
+
+
 def assess_social_identity(profile: dict[str, Any], link: dict[str, str]) -> dict[str, Any]:
     core = _tokens(profile.get("name"))
     parsed = urllib.parse.urlparse(link.get("url") or "")
@@ -114,6 +122,8 @@ def assess_social_identity(profile: dict[str, Any], link: dict[str, str]) -> dic
     matched = [token for token in core if token in handle_compact]
     core_compact = "".join(core)
     ratio = len(set(matched)) / len(set(core)) if core else 0.0
+    distinctive = [token for token in core if token not in GENERIC_DESCRIPTIVE_TOKENS]
+    dist_matched = [token for token in distinctive if token in handle_compact]
     if core_compact and core_compact in handle_compact:
         score = 0.98
         reason = "normalized legal-name sequence appears in the social handle"
@@ -123,6 +133,9 @@ def assess_social_identity(profile: dict[str, Any], link: dict[str, str]) -> dic
     elif ratio >= 0.75 and len(set(matched)) >= 2:
         score = 0.9
         reason = "most legal-name tokens appear in the social handle"
+    elif len(distinctive) == 1 and len(dist_matched) == 1 and len(distinctive[0]) >= 4:
+        score = 0.92
+        reason = "distinctive legal-name brand token appears in the social handle"
     else:
         score = 0.3
         reason = "social handle lacks strong exact-entity name evidence"

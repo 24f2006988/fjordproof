@@ -94,11 +94,36 @@ class HardProofTests(unittest.TestCase):
             '<url><loc>https://example.no/nyheter/ny-kunde-i-oslo</loc><lastmod>2026-09-01T10:00:00+00:00</lastmod></url>'
             '<url><loc>https://other.no/nyheter/skal-ikke-med</loc><lastmod>2026-09-02</lastmod></url></urlset>'
         )
+        # A sitemap <lastmod> alone is never published as a publication date.
         v = self._footprint({"https://example.no/": "<p>Hei</p>", "https://example.no/sitemap.xml": sitemap})
         self.assertEqual(v["careers_urls"], ["https://example.no/karriere/"])
-        self.assertEqual([d["url"] for d in v["dated_activity"]], ["https://example.no/nyheter/ny-kunde-i-oslo"])
-        self.assertEqual(v["dated_activity"][0]["date"], "2026-09-01")
-        self.assertEqual(v["dated_activity"][0]["date_kind"], "sitemap_lastmod")
+        self.assertEqual(v["dated_activity"], [])
+        # The article page's own publication markup is used instead (title, direct URL, published date).
+        article = ('<html><head><meta property="og:title" content="Ny kunde i Oslo">'
+                   '<meta property="article:published_time" content="2026-08-20T08:00:00+02:00"></head><body></body></html>')
+        v = self._footprint({"https://example.no/": "<p>Hei</p>", "https://example.no/sitemap.xml": sitemap,
+                             "https://example.no/nyheter/ny-kunde-i-oslo": article})
+        self.assertEqual(v["dated_activity"], [{"title": "Ny kunde i Oslo", "url": "https://example.no/nyheter/ny-kunde-i-oslo",
+                                                "date": "2026-08-20", "date_kind": "meta_published_time"}])
+
+    def test_news_section_page_yields_article_items_with_their_own_dates(self):
+        home = '<a href="/nyheter">Nyheter</a>'
+        section = ('<a href="/nyheter/apning-pa-hamar">Åpning</a><a href="/nyheter/page/2">Neste</a>'
+                   '<a href="/nyheter/kategori/drift">Drift</a><a href="https://other.no/nyheter/x">Ekstern</a>')
+        art = ('<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"NewsArticle",'
+               '"headline":"Vi åpner på Hamar","datePublished":"2026-05-02T09:00:00Z","dateModified":"2026-09-01"}]}</script>')
+        v = self._footprint({"https://example.no/": home, "https://example.no/nyheter": section,
+                             "https://example.no/nyheter/apning-pa-hamar": art})
+        self.assertEqual(v["dated_activity"], [{"title": "Vi åpner på Hamar", "url": "https://example.no/nyheter/apning-pa-hamar",
+                                                "date": "2026-05-02", "date_kind": "jsonld_datePublished"}])
+        src = v["item_sources"]["dated_activity"][0]
+        self.assertEqual(src["source_url"], "https://example.no/nyheter/apning-pa-hamar")
+        self.assertIn("datePublished", src["span"])
+
+    def test_article_without_publication_markup_or_with_future_date_is_skipped(self):
+        self.assertIsNone(footprint_plus._article_meta(b"<h1>Om oss</h1><p>Oppdatert 2026-01-01</p>"))
+        self.assertIsNone(footprint_plus._article_meta(b'<h1>X</h1><meta property="article:published_time" content="2999-01-01">'))
+        self.assertIsNone(footprint_plus._article_meta(b'<meta property="article:modified_time" content="2026-01-01"><h1>X</h1>'))
 
     def test_wordpress_rest_posts_used_when_no_feed(self):
         posts = '[{"date": "2026-08-15T09:00:00", "link": "https://example.no/hei/", "title": {"rendered": "Hei &amp; velkommen"}}]'

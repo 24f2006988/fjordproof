@@ -33,6 +33,7 @@ def slim(envelope: dict) -> dict:
         "website_note": website_ev.get("note"),
         "run": envelope.get("run") or {},
         "ops": envelope.get("operations") or {},
+        "syn": envelope.get("synthesis") or {},
     }
 
 
@@ -255,6 +256,9 @@ function summary(d){
   const wc = claim(d,"official_website"); const weak = site && wc.c != null && wc.c < 0.9;
   add(site ? (weak ? "The registry lists this website, but the page does not confirm it belongs to this exact company (it may be a brand, franchise or shared site): " : "A website was matched to this company: ") : "No website could be verified for this company. ", site ? link(site) : "", refs(d, wc?.e));
   const act = activity(d); if (act.length){ const latest = act.map(x => x.date).filter(Boolean).sort().pop(); add(act.length + " dated public items were found on the company site; the latest is dated " + latest + ".", refs(d, claim(d,"external_footprint")?.e)); }
+  const syn = d.syn || {};
+  (syn.statements || []).filter(x => x.topic === "trend" || x.topic === "news" || x.topic === "hiring").forEach(x => add(x.text, refs(d, x.evidence_ids)));
+  if ((syn.signals || []).length) p.append(el("p", {}, el("strong", {text:"Signals: "}), syn.signals.map((x, i) => el("span", {}, i ? "; " : "", x.text, refs(d, x.evidence_ids)))));
   const ch = d.changes; add(ch.length ? ch.length + " changes since the previous run (listed below)." : "No earlier snapshot to compare with, so this run is the baseline. Later runs list any changes here and keep the earlier evidence.");
   return p;
 }

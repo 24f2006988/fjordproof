@@ -64,7 +64,12 @@ def main() -> None:
     budget.record_requests(live_requests)
 
     def enrich(profile: dict) -> tuple[dict, dict]:
-        records, metrics = fetch_official_modules(profile["organisation_number"], fetch_modules)
+        try:
+            records, metrics = fetch_official_modules(profile["organisation_number"], fetch_modules)
+        except Exception as exc:  # noqa: BLE001  one company's source failure must never stop the batch
+            note = f"{type(exc).__name__}: {str(exc)[:150]}"
+            records = {m: evidence(m, "source_error", "official_registry", "https://data.brreg.no", note=note) for m in fetch_modules}
+            metrics = []
         profile["evidence"].update(records)
         website_metrics = {"requests": 0, "bytes": 0, "latencies_ms": []}
         if "website" in requested_modules:
@@ -77,8 +82,13 @@ def main() -> None:
                     note=f"Budget guard active ({int(budget.elapsed_seconds)}s elapsed); skipping website fetch",
                 )
             else:
-                website_record, website_metrics = fetch_website(profile.get("website"))
-                profile["evidence"]["website"] = apply_website_identity_gate(profile, website_record)["website"]
+                try:
+                    website_record, website_metrics = fetch_website(profile.get("website"))
+                    profile["evidence"]["website"] = apply_website_identity_gate(profile, website_record)["website"]
+                except Exception as exc:  # noqa: BLE001
+                    profile["evidence"]["website"] = evidence("website", "source_error", "registry_linked_company_website",
+                                                              "https://data.brreg.no", note=f"{type(exc).__name__}: {str(exc)[:150]}")
+                    website_metrics = {"requests": 1, "bytes": 0, "latencies_ms": []}
         metric = {
             "requests": len(metrics) + website_metrics["requests"],
             "bytes": sum(item.bytes_received for item in metrics) + website_metrics["bytes"],

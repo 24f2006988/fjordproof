@@ -137,11 +137,22 @@ Each envelope keeps the starter's native fields (`state`, `modules`, `profile`) 
 (`run`, `claims`, `evidence`, `changes`, `errors`, `operations`), added by `src/norway_company_agent/contract.py`.
 Every `available` claim cites `evidence_ids`; missing data is `not_available`/`blocked`/`failed`, never zero-filled.
 
+- `news_items` claim: article-level company news from the verified company-owned site only. Each item has `title`, direct `url`,
+  `published_date` and `date_kind` (where the date came from: the site's RSS/Atom feed, WordPress REST post date, JSON-LD
+  `datePublished`, `article:published_time`, or an `<article><time datetime>`). A sitemap `<lastmod>` is never used as a
+  publication date. Each item's evidence record points at the page or feed that contains it, with its SHA-256 and the literal span.
+- `synthesis` (top-level, per envelope, built by `src/norway_company_agent/synthesis.py`): `headline`, `statements` (identity, activity,
+  size, latest accounts and year-on-year trend, leadership, group, website, news, hiring), `signals` (e.g. `loss_making`,
+  `negative_equity`, `revenue_growth`, `revenue_decline`, `recent_news`, `hiring`), `unknowns` (field, state and the reason it is
+  unknown) and `changes` (summary of material changes since the previous run). Every statement and signal cites the `evidence_ids`
+  of the claims it is built from. It is generated deterministically from the claims; no model is used and nothing is inferred
+  beyond the claims.
+
 ### Submission facts
 - Run command (`--bulk` is optional; without it each company is looked up live in Brreg, about 1 extra request each): `uv sync && uv run python scripts/run_signalpost.py --organisations <batch.jsonl> [--bulk brreg-enheter.csv] --run-id <id> --expected-count <n> --outdir out`
 - Models/APIs: none (no LLM, no paid API). Sources: Brønnøysundregistrene open data (NLOD 2.0) and company-owned websites (robots.txt respected, public-URL guard).
-- Expected third-party cost: USD 0. Measured: ~1,000 requests and ~5 min per 100 companies.
-- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json` (run smoke-002, contract format, 106 tests pass).
+- Expected third-party cost: USD 0. Measured (smoke-023): 1,745 requests and ~8.4 min per 100 companies (limit per 100-company shard: 2,000 requests / 45 min).
+- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run smoke-023, contract format, 100/100 envelopes, validation passed, 141 tests pass).
 
 ## Profile viewer (UX)
 Every run also writes `<outdir>/site/index.html`: one static page (no server, no network) built from the envelopes by `scripts/build_site.py`.

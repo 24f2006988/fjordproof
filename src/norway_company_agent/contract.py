@@ -5,6 +5,8 @@ import hashlib
 import json
 from typing import Any
 
+from .synthesis import build_synthesis
+
 AVAILABILITY = {
     "available": "available",
     "not_found": "not_available",
@@ -264,6 +266,18 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             "confidence": 0.80 if present else 0.0,
             "evidence_ids": fp_evidence(*sks) if present else [],
         })
+    # Article-level news: title, direct URL and publication date as declared by the item's own page or feed.
+    news = [{"title": i["title"], "url": i["url"], "published_date": i["date"], "date_kind": i.get("date_kind", "feed_item_date")}
+            for i in (fp_val.get("dated_activity") or []) if i.get("title") and i.get("url") and i.get("date") and i.get("date_kind") != "sitemap_lastmod"]
+    news.sort(key=lambda i: (i["published_date"], i["url"]), reverse=True)
+    news_present = fp_ok and bool(news)
+    claims.append({
+        "field": "news_items",
+        "value": news if news_present else None,
+        "availability": "available" if news_present else ("not_available" if fp_rec.get("status") in {"available", "not_found"} else "failed"),
+        "confidence": 0.85 if news_present else 0.0,
+        "evidence_ids": fp_evidence("dated_activity") if news_present else [],
+    })
     contact_dict = fp_val.get("contact") or {}
     for cfld, ckey, csk in (("site_email", "email", "contact_email"), ("site_phone", "phone", "contact_phone")):
         cval = contact_dict.get(ckey)
@@ -337,4 +351,5 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         "third_party_cost_usd": 0,
     }
     envelope.setdefault("changes", [])
+    envelope["synthesis"] = build_synthesis(envelope)
     return envelope

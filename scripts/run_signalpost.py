@@ -97,6 +97,8 @@ def main() -> None:
                     found, m = discover_website(profile)
                     extra["requests"] += m["requests"]
                     extra["bytes"] += m["bytes"]
+                    if not found and m.get("transient"):
+                        retry.add(profile["organisation_number"])
                     if found:
                         profile["evidence"]["website"] = found
                         profile["website"] = found["source_url"]
@@ -119,8 +121,33 @@ def main() -> None:
         profile["changes_since_previous"] = material_changes(previous.get(profile["organisation_number"]), profile)
         return profile
 
+    def retry_discovery(profile: dict) -> dict:
+        """Second, slower attempt for companies whose candidate site timed out or errored in the parallel pass."""
+        if budget.is_exhausted(safety_margin_seconds=180.0, safety_margin_requests=100):
+            return profile
+        try:
+            found, m = discover_website(profile, timeout=12.0)
+            used = m["requests"]
+            if found:
+                profile["evidence"]["website"] = found
+                profile["website"] = found["source_url"]
+                fp, fm = extract_footprint(profile, found)
+                used += fm["requests"]
+                profile["evidence"]["external_footprint"] = fp
+                profile["changes_since_previous"] = material_changes(previous.get(profile["organisation_number"]), profile)
+        except Exception:  # noqa: BLE001  the first-pass result stands
+            return profile
+        budget.record_requests(used)
+        profile["run_metrics"]["plus_requests"] = profile["run_metrics"].get("plus_requests", 0) + used
+        return profile
+
+    retry: set[str] = set()
     with ThreadPoolExecutor(a.plus_workers) as pool:
         profiles = list(pool.map(plus, profiles))
+    if retry:
+        with ThreadPoolExecutor(4) as pool:
+            profiles = list(pool.map(lambda pr: retry_discovery(pr) if pr["organisation_number"] in retry else pr, profiles))
+    report["discovery_retries"] = len(retry)
     completed = utc_now()
     envelopes = [terminal_envelope(pr, run_id=a.run_id, modules=MODULES.split(","), started_at=report["started_at"], completed_at=completed) for pr in profiles]
     for e in envelopes:

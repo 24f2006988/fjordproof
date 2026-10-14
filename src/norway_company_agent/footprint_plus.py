@@ -10,6 +10,7 @@ import json
 import os
 import re
 import socket
+import threading
 import urllib.parse
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
@@ -18,8 +19,8 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 from .evidence import evidence, utc_now
-from .identity import _tokens, apply_website_identity_gate
-from .website import SAFE_OPENER, USER_AGENT, _robots_allowed, assert_public_url, fetch_website
+from .identity import _tokens, apply_website_identity_gate, assess_social_identity
+from .website import SAFE_OPENER, USER_AGENT, _registered_domain, _robots_allowed, assert_public_url, fetch_website, normalize_social_url
 
 FREE_MAIL = {"gmail.com", "hotmail.com", "outlook.com", "live.com", "yahoo.com", "icloud.com", "online.no",
              "msn.com", "me.com", "hotmail.no", "outlook.no", "live.no", "yahoo.no", "getmail.no", "start.no",
@@ -203,16 +204,24 @@ def _accept_proof(proof: str | None, assessment: dict[str, Any], method: str) ->
     return method != "registry_email_domain" and assessment.get("score", 0) >= 0.85
 
 
-def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3) -> tuple[dict[str, Any] | None, dict[str, int]]:
-    metrics = {"requests": 0, "bytes": 0}
+def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout: float = 5.0) -> tuple[dict[str, Any] | None, dict[str, int]]:
+    """First candidate host with hard proof of the exact entity, else None.
+
+    ``metrics["transient"]`` counts resolving candidates whose homepage fetch failed with a network error or
+    timeout, so the caller can retry only those companies once, more slowly, instead of losing a site to load.
+    """
+    metrics = {"requests": 0, "bytes": 0, "transient": 0}
+    net_errors_before = _transient_count()
     tested = 0
     for host, method in candidate_hosts(profile):
         if not _resolves(host):
             continue
         tested += 1
-        record, m = fetch_website(host, timeout=5.0)
+        record, m = fetch_website(host, timeout=timeout)
         metrics["requests"] += m["requests"]
         metrics["bytes"] += m["bytes"]
+        if record.get("status") == "source_error" and _is_transient(str(record.get("note") or "")):
+            metrics["transient"] += 1
         if record.get("status") != "available":
             if tested >= max_tested_hosts:
                 break
@@ -240,6 +249,7 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3) -> tupl
         record["note"] = (f"Discovered via {method}; identity: {'; '.join(assessment.get('reasons', []))}. "
                           "Company-controlled claim layer; not an official registry fact.")
         return record, metrics
+    metrics["transient"] += _transient_count() - net_errors_before
     return None, metrics
 
 
@@ -342,6 +352,19 @@ def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any], max_pa
     return None, metrics
 
 
+_NET = threading.local()  # per-thread count of timeouts / dropped connections seen by _get (not 404s or policy refusals)
+TRANSIENT_MARKERS = ("timed out", "timeout", "reset", "remote end closed", "remotedisconnected", "incompleteread", "temporarily")
+
+
+def _is_transient(exc: BaseException | str) -> bool:
+    text = (type(exc).__name__ + " " + str(exc)) if isinstance(exc, BaseException) else str(exc)
+    return any(m in text.casefold() for m in TRANSIENT_MARKERS)
+
+
+def _transient_count() -> int:
+    return getattr(_NET, "count", 0)
+
+
 def _get(url: str, timeout: float = 6.0, max_bytes: int = 800_000) -> tuple[bytes | None, str | None]:
     try:
         assert_public_url(url)
@@ -352,10 +375,15 @@ def _get(url: str, timeout: float = 6.0, max_bytes: int = 800_000) -> tuple[byte
             final = r.geturl()
             assert_public_url(final)
             return r.read(max_bytes), final
-    except Exception:
+    except urllib.error.HTTPError:
+        return None, None
+    except Exception as exc:
+        if _is_transient(exc) or isinstance(exc, (TimeoutError, ConnectionError)):
+            _NET.count = _transient_count() + 1
         return None, None
 
 
+import urllib.error  # noqa: E402
 import urllib.request  # noqa: E402  (kept after helpers to keep imports grouped above minimal)
 
 
@@ -366,6 +394,14 @@ CAREER_TEXT_RE = re.compile(r"\b(karriere|careers?|ledige stillinger|rekrutterin
 NEWS_TEXT_RE = re.compile(r"\b(nyheter|news|aktuelt|blogg|blog|presse|press)\b", re.I)
 SITEMAP_NEWS_FILE_RE = re.compile(r"(nyhet|news|blogg?|aktuelt|presse|press|artikkel|innlegg|post)", re.I)
 PHONE_LABEL_RE = re.compile(r"(?:tlf|tel|telefon|mobil|ring(?:\s+oss)?)\b[\s.:]*((?:\+\s?47|0047)?[\s.]?(?:\d[\s.]?){8})", re.I)
+ATS_DOMAINS = (
+    "finn.no", "teamtailor.com", "recman.no", "recman.biz", "jobbnorge.no",
+    "webcruiter.no", "webcruiter.com", "reachmee.com", "easycruit.com",
+    "varbi.com", "workbuster.com", "workbuster.se", "workbuster.no",
+    "jobylon.com", "bamboohr.com", "myworkdayjobs.com", "workday.com",
+    "lever.co", "greenhouse.io", "personio.de", "personio.com",
+    "talentech.com", "karrierestart.no", "homerun.co",
+)
 
 
 def _segments(path: str) -> list[str]:
@@ -523,6 +559,114 @@ def _parse_feed(raw: bytes, base: str) -> list[dict[str, str]]:
     return items
 
 
+ARTICLE_TYPES = {"newsarticle", "article", "blogposting", "reportagenewsarticle", "pressrelease"}
+NOT_ARTICLE_SEGMENTS = {"page", "side", "tag", "tags", "kategori", "category", "author", "forfatter", "feed", "arkiv", "archive"}
+
+
+def _iso_date(text: str) -> str:
+    """YYYY-MM-DD from an ISO/RFC date string, or '' when it is not a plausible past publication date."""
+    text = (text or "").strip()
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if not m:
+        try:
+            when = parsedate_to_datetime(text).date().isoformat()
+        except Exception:
+            return ""
+    else:
+        when = m.group(0)
+    if not ("2000-01-01" <= when <= utc_now()[:10]):
+        return ""
+    return when
+
+
+def _article_meta(raw: bytes) -> tuple[str, str, str, str] | None:
+    """(title, publication date, date source, literal span) declared by the article page itself, else None.
+
+    Only explicit publication markup counts (JSON-LD datePublished, article:published_time, <time datetime>
+    inside the article); modification dates and sitemap lastmod are never used as a publication date.
+    """
+    soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml")
+    title, date, kind, span = "", "", "", ""
+    for s in soup.select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(s.string or s.get_text() or "{}")
+        except ValueError:
+            continue
+        nodes = data if isinstance(data, list) else (data.get("@graph") if isinstance(data, dict) and isinstance(data.get("@graph"), list) else [data])
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            types = node.get("@type")
+            types = {str(t).casefold() for t in (types if isinstance(types, list) else [types])}
+            if types & ARTICLE_TYPES and node.get("datePublished"):
+                date = _iso_date(str(node["datePublished"]))
+                if date:
+                    title = str(node.get("headline") or node.get("name") or "")
+                    kind, span = "jsonld_datePublished", f'"datePublished": "{node["datePublished"]}"'
+                    break
+        if date:
+            break
+    if not date:
+        meta = soup.select_one('meta[property="article:published_time"], meta[itemprop="datePublished"]')
+        if meta and _iso_date(str(meta.get("content") or "")):
+            date, kind, span = _iso_date(str(meta.get("content"))), "meta_published_time", str(meta)
+    if not date:
+        t = soup.select_one("article time[datetime]")
+        if t and _iso_date(str(t.get("datetime") or "")):
+            date, kind, span = _iso_date(str(t.get("datetime"))), "article_time_element", str(t)
+    if not date:
+        return None
+    if not title:
+        og = soup.select_one('meta[property="og:title"]')
+        h1 = soup.find("h1")
+        title = (str(og.get("content") or "") if og else "") or (h1.get_text(" ", strip=True) if h1 else "")
+    title = " ".join(BeautifulSoup(title, "lxml").get_text().split())[:200] if title else ""
+    return (title, date, kind, span) if title else None
+
+
+def _article_links(raw: bytes, base: str, host: str, section: str) -> list[str]:
+    """Links under a news section (same host, one level deeper, no pagination/tag/category pages)."""
+    seg0 = _segments(urllib.parse.urlparse(section).path)
+    out: list[str] = []
+    for a in BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml").select("a[href]"):
+        url = urllib.parse.urljoin(base, str(a.get("href") or "")).split("#", 1)[0]
+        p = urllib.parse.urlparse(url)
+        segs = _segments(p.path)
+        if (p.scheme in {"http", "https"} and _same_site(url, host) and len(segs) > len(seg0) and segs[:len(seg0)] == seg0
+                and not any(s in NOT_ARTICLE_SEGMENTS for s in segs) and not segs[-1].isdigit() and url not in out):
+            out.append(url)
+    return out
+
+
+def _news_articles(sections: list[str], candidates: list[str], host: str, max_articles: int = 4) -> tuple[list[dict[str, str]], list[dict[str, str]], int]:
+    """Article-level news items (title, direct URL, publication date) read from each article page itself.
+
+    Returns (items, provenance per item, requests used). At most one section page and ``max_articles`` article pages.
+    """
+    requests = 0
+    urls = list(candidates)
+    if sections and len(urls) < max_articles:
+        sraw, sfinal = _get(sections[0], timeout=5.0)
+        requests += 1
+        if sraw:
+            urls += [u for u in _article_links(sraw, sfinal or sections[0], host, sfinal or sections[0]) if u not in urls]
+    items, prov = [], []
+    for url in urls[:max_articles]:
+        araw, afinal = _get(url, timeout=5.0)
+        requests += 1
+        meta = _article_meta(araw) if araw else None
+        if not meta:
+            continue
+        title, date, kind, span = meta
+        direct = afinal or url
+        if not _same_site(direct, host) or any(i["url"] == direct for i in items):
+            continue
+        items.append({"title": title, "url": direct, "date": date, "date_kind": kind})
+        prov.append({"item": direct, "source_url": direct, "sha256": _sha(araw), "span": f"{title} | {span}"})
+    items.sort(key=lambda i: i["date"], reverse=True)
+    return items, prov, requests
+
+
 def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
     """Dated activity, careers entry points, contact and company-owned profiles from a VERIFIED website only.
 
@@ -549,6 +693,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         metrics["bytes"] += len(raw)
         soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml")
         host = urllib.parse.urlparse(final).netloc.lower()
+        base_domain = _registered_domain(final)
         for a in soup.select("a[href]"):
             url = urllib.parse.urljoin(final, str(a.get("href") or ""))
             p = urllib.parse.urlparse(url)
@@ -563,21 +708,29 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             if p.scheme not in {"http", "https"}:
                 continue
             text = a.get_text(" ", strip=True)
-            if p.netloc.lower() == host:
-                if _is_career(p.path, text) and url not in careers:
+            p_host = p.netloc.lower()
+            is_same_domain = bool(base_domain and (p_host == base_domain or p_host.endswith("." + base_domain)))
+            if is_same_domain:
+                sub = p_host.removesuffix("." + base_domain) if p_host != base_domain else ""
+                sub_career = any(s in CAREER_SEGMENTS for s in sub.split("."))
+                if (sub_career or _is_career(p.path, text)) and url not in careers:
                     careers.append(url)
                     note("careers_urls", url, final, home_sha, str(a))
-                if _is_news(p.path, text) and url not in news_pages:
-                    news_pages.append(url)
-                    note("news_pages", url, final, home_sha, str(a))
-                if any(t in (p.path + " " + text).casefold() for t in ("kontakt", "contact", "om-oss", "omoss")) and url not in contact_links and url.rstrip("/") != final.rstrip("/"):
-                    contact_links.append(url)
-            elif any(d in p.netloc.lower() for d in ("finn.no", "webcruiter", "easycruit", "teamtailor", "recman", "varbi", "lever.co", "greenhouse.io")) \
-                    and (_is_career(p.path, text) or re.search(r"\b(stilling|stillinger|finn)\b", text, re.I)) and url not in careers:
+                if p_host == host:
+                    if _is_news(p.path, text) and url not in news_pages:
+                        news_pages.append(url)
+                        note("news_pages", url, final, home_sha, str(a))
+                    if any(t in (p.path + " " + text).casefold() for t in ("kontakt", "contact", "om-oss", "omoss")) and url not in contact_links and url.rstrip("/") != final.rstrip("/"):
+                        contact_links.append(url)
+            # finn.no also hosts car/property ads: only its job section counts ("finn" is also Norwegian for "find").
+            elif any(d in p_host for d in ATS_DOMAINS) and (p_host.removeprefix("www.") != "finn.no" or "/job" in p.path) \
+                    and (_is_career(p.path, text) or re.search(r"\b(stilling|stillinger|karriere|jobb|jobs?|careers?)\b", text, re.I)) and url not in careers:
                 careers.append(url)
                 note("careers_urls", url, final, home_sha, str(a))
         for link in soup.select('link[rel="alternate"][type*="rss"], link[rel="alternate"][type*="atom"]'):
-            feeds.append(urllib.parse.urljoin(final, str(link.get("href") or "")))
+            feed_url = urllib.parse.urljoin(final, str(link.get("href") or ""))
+            if "comment" not in feed_url.casefold():
+                feeds.append(feed_url)
         for s in soup.select('script[type="application/ld+json"]'):
             try:
                 jtext = s.string or s.get_text() or "{}"
@@ -610,10 +763,12 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             contact["phone"] = found_phone[0]
             note("contact_phone", found_phone[0], final, home_sha, found_phone[1])
 
-    if contact_links and (not contact.get("email") or not contact.get("phone")):
+    craw, cfinal, csha = None, None, None
+    if contact_links and (not contact.get("email") or not contact.get("phone") or not value.get("social_links")):
         craw, cfinal = _get(contact_links[0], timeout=5.0)
         metrics["requests"] += 1
         if craw:
+            metrics["bytes"] += len(craw)
             csha, csrc = _sha(craw), cfinal or contact_links[0]
             csoup = BeautifulSoup(craw.decode("utf-8", errors="replace"), "lxml")
             for ca in csoup.select("a[href]"):
@@ -633,6 +788,39 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
                     contact["phone"] = found_phone[0]
                     note("contact_phone", found_phone[0], csrc, csha, found_phone[1])
 
+    # If career entry points discovered, fetch the primary career page to find structured job postings
+    if careers and not job_postings:
+        career_target = careers[0]
+        ct_p = urllib.parse.urlparse(career_target)
+        ct_host = ct_p.netloc.lower()
+        base_domain = _registered_domain(final) if final else ""
+        if (base_domain and (ct_host == base_domain or ct_host.endswith("." + base_domain))) or any(d in ct_host for d in ("teamtailor.com", "recman.no", "jobbnorge.no", "webcruiter.no")):
+            ct_raw, ct_final = _get(career_target, timeout=5.0)
+            metrics["requests"] += 1
+            if ct_raw:
+                metrics["bytes"] += len(ct_raw)
+                ct_sha = _sha(ct_raw)
+                ct_soup = BeautifulSoup(ct_raw.decode("utf-8", errors="replace"), "lxml")
+                for s in ct_soup.select('script[type="application/ld+json"]'):
+                    try:
+                        jtext = s.string or s.get_text() or "{}"
+                        jdata = json.loads(jtext)
+                        items = jdata if isinstance(jdata, list) else [jdata]
+                        for item in items:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("@type") == "JobPosting" and item.get("title"):
+                                title_str = str(item["title"])[:200]
+                                if not any(jp.get("title") == title_str for jp in job_postings):
+                                    job_postings.append({
+                                        "title": title_str,
+                                        "date_posted": str(item.get("datePosted") or "")[:20],
+                                        "employment_type": str(item.get("employmentType") or "")[:50],
+                                    })
+                                    note("job_postings", title_str, ct_final or career_target, ct_sha, jtext[:240])
+                    except Exception:
+                        pass
+
     activity = []
     for feed in feeds[:2]:
         fraw, ffinal = _get(feed)
@@ -640,7 +828,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         if fraw:
             metrics["bytes"] += len(fraw)
             for item in _parse_feed(fraw, ffinal or feed):
-                activity.append({**item, "source_feed": ffinal})
+                activity.append({**item, "date_kind": "feed_item_date", "source_feed": ffinal})
                 note("dated_activity", item["url"], ffinal or feed, _sha(fraw), f"{item['title']} {item['date']}")
     if final:
         host = urllib.parse.urlparse(final).netloc.lower()
@@ -659,21 +847,48 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             metrics["requests"] += 1
             for item in activity:
                 note("dated_activity", item["url"], wp_src["source_url"], wp_src["sha256"], f"{item['title']} {item['date']}")
+        # A sitemap <lastmod> is not a publication date: sitemap posts are only candidates for the article step.
         if not activity:
-            activity = sm_dated
-            for item in sm_dated:
-                p = sm_prov.get(item["url"])
-                if p:
-                    note("dated_activity", item["url"], p["source_url"], p["sha256"], p["span"])
+            sections = [u for u in news_pages if (_segments(urllib.parse.urlparse(u).path) or [""])[-1] in NEWS_SEGMENTS]
+            candidates = [d["url"] for d in sm_dated] + [u for u in sm_news if u not in sections]
+            arts, art_prov, art_requests = _news_articles(sections, list(dict.fromkeys(candidates)), host)
+            metrics["requests"] += art_requests
+            activity = arts
+            for p in art_prov:
+                note("dated_activity", p["item"], p["source_url"], p["sha256"], p["span"])
+
     social = []
     page_text = raw.decode("utf-8", errors="replace") if raw else ""
+    cpage_text = craw.decode("utf-8", errors="replace") if craw else ""
+    all_social_candidates: list[tuple[dict[str, str], str, str, str]] = []
     for link in (value.get("social_links") or []):
+        all_social_candidates.append((link, final, home_sha, page_text))
+    if craw and cfinal:
+        csoup = BeautifulSoup(cpage_text, "lxml")
+        for ca in csoup.select("a[href]"):
+            curl = urllib.parse.urljoin(cfinal, str(ca.get("href") or ""))
+            norm = normalize_social_url(curl)
+            if norm and not any(cand[0].get("url") == norm["url"] for cand in all_social_candidates):
+                ass = assess_social_identity(profile, norm)
+                if ass.get("publishable"):
+                    all_social_candidates.append((norm, cfinal, csha, cpage_text))
+
+    for link, cand_src, cand_sha, cand_text in all_social_candidates:
         url = str(link.get("url") if isinstance(link, dict) else link)
         key = re.sub(r"^https?://(?:www\.)?", "", url, flags=re.I)
-        hit = re.search(r"[^\"'\s<>]*" + re.escape(key) + r"[^\"'\s<>]*", page_text, re.I) if (final and key) else None
-        if hit:
+        hit = re.search(r"[^\"'\s<>]*" + re.escape(key) + r"[^\"'\s<>]*", cand_text, re.I) if (cand_src and key) else None
+        if not hit and cand_src and key:
+            other_text = cpage_text if cand_text is page_text else page_text
+            other_src = cfinal if cand_text is page_text else final
+            other_sha = csha if cand_text is page_text else home_sha
+            if other_text and other_src:
+                hit = re.search(r"[^\"'\s<>]*" + re.escape(key) + r"[^\"'\s<>]*", other_text, re.I)
+                if hit:
+                    cand_src, cand_sha = other_src, other_sha
+        if hit and not any(s.get("url") == link.get("url") for s in social):
             social.append(link)
-            note("social_links", url, final, home_sha, hit.group(0))
+            note("social_links", url, cand_src, cand_sha, hit.group(0))
+
     found = bool(careers or activity or contact or news_pages or job_postings)
     return evidence(
         "external_footprint", "available" if found else "not_found", "company_owned_site", final or source,
@@ -683,3 +898,4 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         note="Extracted only from an identity-verified company-owned website; activity dates come from the site's own feed.",
         content_sha256=home_sha or None,
     ), metrics
+

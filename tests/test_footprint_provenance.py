@@ -33,21 +33,33 @@ class FootprintHeuristics(unittest.TestCase):
         self.assertEqual(_phone_from_text("Ring oss: 92 56 61 36 i dag")[0], "+4792566136")
 
 
+    def test_social_distinctive_brand_with_generic_activity(self):
+        from norway_company_agent.identity import assess_social_identity
+        skya = {"name": "SKYA MARKEDSFØRING AS"}
+        self.assertTrue(assess_social_identity(skya, {"platform": "facebook", "url": "https://facebook.com/skyaregnskap"})["publishable"])
+        self.assertTrue(assess_social_identity(skya, {"platform": "instagram", "url": "https://instagram.com/skya_teamet"})["publishable"])
+        # Global parent without local subsidiary markers remains rejected
+        aon = {"name": "Aon Norway AS"}
+        self.assertFalse(assess_social_identity(aon, {"platform": "linkedin", "url": "https://linkedin.com/company/aon"})["publishable"])
+
+
 class PerItemEvidence(unittest.TestCase):
     def make(self, footprint_status="available"):
         site = {"status": "available", "source_url": "https://eksempel.no/", "source_class": "company_owned_site",
                 "retrieved_at": "2026-01-01T00:00:02Z", "content_sha256": SHA_HOME,
                 "value": {"title": "Eksempel", "identity_assessment": {"publishable": True, "score": 1.0}}}
         fp = {"status": footprint_status, "source_url": "https://eksempel.no/", "source_class": "company_owned_site",
-              "retrieved_at": "2026-01-01T00:00:03Z", "content_sha256": SHA_HOME,
-              "value": {"careers_urls": ["https://eksempel.no/karriere"], "news_pages": [], "dated_activity": [],
-                        "social_links": [], "job_postings": [],
+                "retrieved_at": "2026-01-01T00:00:03Z", "content_sha256": SHA_HOME,
+                "value": {"careers_urls": ["https://eksempel.no/karriere"], "news_pages": [], "dated_activity": [],
+                        "social_links": [], "job_postings": [{"title": "Utvikler", "date_posted": "2026-01-01", "employment_type": "Full-time"}],
                         "contact": {"phone": "+4792566136"},
                         "item_sources": {
                             "careers_urls": [{"item": "https://eksempel.no/karriere", "source_url": "https://eksempel.no/",
                                               "sha256": SHA_HOME, "span": '<a href="/karriere">Karriere</a>'}],
                             "contact_phone": [{"item": "+4792566136", "source_url": "https://eksempel.no/kontakt",
-                                               "sha256": SHA_CONTACT, "span": "Tlf 92 56 61 36"}]}}}
+                                               "sha256": SHA_CONTACT, "span": "Tlf 92 56 61 36"}],
+                            "job_postings": [{"item": "Utvikler", "source_url": "https://eksempel.no/karriere",
+                                              "sha256": SHA_CONTACT, "span": '{"@type": "JobPosting", "title": "Utvikler"}'}]}}}
         profile = {"organisation_number": "123456789", "name": "Eksempel AS",
                    "evidence": {"registry": {"status": "available", "source_url": "https://data.brreg.no/x", "source_class": "official_registry",
                                              "retrieved_at": "2026-01-01T00:00:00Z", "content_sha256": "c" * 64, "value": {"navn": "Eksempel AS"}},
@@ -70,6 +82,10 @@ class PerItemEvidence(unittest.TestCase):
         careers = evidence[claims["careers_urls"]["evidence_ids"][0]]
         self.assertEqual(careers["source_url"], "https://eksempel.no/")
         self.assertIn("/karriere", careers["claim_span"])
+        jobs = evidence[claims["job_postings"]["evidence_ids"][0]]
+        self.assertEqual(jobs["source_url"], "https://eksempel.no/karriere")
+        self.assertEqual(jobs["content_sha256"], SHA_CONTACT)
+        self.assertIn("JobPosting", jobs["claim_span"])
 
     def test_no_invented_hash_for_empty_sources(self):
         env = self.make()

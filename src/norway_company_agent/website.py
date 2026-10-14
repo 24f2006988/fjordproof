@@ -325,6 +325,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             elif page_error:
                 crawl_errors.append({"url": page_url, "error": page_error})
         value["pages"] = pages
+        social.extend(structured_social_links(value["structured_organisations"]))
         value["social_links"] = list({(item["platform"], item["url"]): item for item in social}.values())
         value["crawl_errors"] = crawl_errors
         return evidence("website", "available", "registry_linked_company_website", final_url, value=value, note="Company-controlled claim layer; not an official registry fact", content_sha256=value["content_sha256"]), {"requests": requests, "bytes": bytes_received, "latencies_ms": page_latencies}
