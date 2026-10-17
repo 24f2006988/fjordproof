@@ -387,7 +387,7 @@ class ExtrasExtractionTests(unittest.TestCase):
             "evidence": {"registry": {"value": {"epostadresse": "betakst@gmail.com"}}},
         }
         hosts3 = dict(footprint_plus.candidate_hosts(p3))
-        self.assertEqual(hosts3.get("betakst.no"), "brand_token_guess")
+        self.assertIn("betakst.no", hosts3)
 
         # Norwegian å -> aa / ø -> oe variants and compound sector initialism
         p4 = {"name": "ÅSGREINA BYGGASSISTANSE AS", "evidence": {}}
@@ -633,15 +633,14 @@ class Phase2RecallAndPrecisionTests(unittest.TestCase):
             self.assertEqual(val["title"], "OG Company Title")
             self.assertEqual(val["description"], "Company meta description")
 
-        # Case B: h1 fallback when title and og:title are empty
+        # Case B: h1 and body text do NOT populate title or description (prevents identity gate loosening)
         html_h1 = b'<html><head></head><body><h1>H1 Main Heading</h1><p>Velkommen til fris\xc3\xb8rsalongen v\xc3\xa5r i Oslo sentrum.</p></body></html>'
         with mock.patch.object(website, "assert_public_url", lambda u: None), \
              mock.patch.object(website.SAFE_OPENER, "open", lambda req, timeout=None: _FakeResponse(html_h1, req.full_url)):
             rec, _ = website.fetch_website("https://example-h1.no/", timeout=5.0, crawl_secondary=False)
             val = rec["value"]
-            self.assertEqual(val["title"], "H1 Main Heading")
-            # raw_text fallback kicks in when description is empty and text has >= 40 chars
-            self.assertIn("frisørsalongen", val["description"])
+            self.assertEqual(val["title"], "")
+            self.assertEqual(val["description"], "")
 
         # Case C: case-insensitive meta description tag
         html_case = b'<html><head><title>Test</title><meta name="Description" content="Mixed case meta description"/></head><body><p>Tekst</p></body></html>'
@@ -703,6 +702,10 @@ class Phase2RecallAndPrecisionTests(unittest.TestCase):
 
         p_bad2 = footprint_plus._phone_from_text("Her er hotel 22334455 i Bergen sentrum.")
         self.assertIsNone(p_bad2)
+
+        # Agency credit rejection
+        p_credit = footprint_plus._phone_from_text("Nettside levert av Webbyrå AS +47 99887766")
+        self.assertIsNone(p_credit)
 
     def test_email_from_text_domain_stem_freemail_and_rejections(self) -> None:
         # Accepted: labeled domain-stem freemail

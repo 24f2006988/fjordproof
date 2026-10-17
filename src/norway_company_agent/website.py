@@ -438,10 +438,6 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
                     if cand_title:
                         title = cand_title
                         break
-        if not title:
-            h1 = soup.find("h1")
-            if h1:
-                title = h1.get_text(" ", strip=True)
 
         structured_orgs = _jsonld_organisations(structured)
         description = ""
@@ -456,8 +452,6 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             desc_val = str(structured_orgs[0]["description"]).strip()
             if desc_val:
                 description = desc_val
-        if not description and raw_text and len(raw_text.strip()) >= 40:
-            description = " ".join(raw_text.split())[:300]
 
         value = {
             "requested_url": normalized,

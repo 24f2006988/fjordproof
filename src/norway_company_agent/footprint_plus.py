@@ -754,6 +754,9 @@ def _phone_from_text(text: str) -> tuple[str, str] | None:
         if phone:
             return phone, m.group(0).strip()[:160]
     for m in re.finditer(r"(?<!\w)(?:\(\+47\)|\+47)[\s.\-]*([2-9]\d[\s.\-]?\d{2}[\s.\-]?\d{2}[\s.\-]?\d{2}|[2-9]\d{2}[\s.\-]?\d{2}[\s.\-]?\d{3})\b", text):
+        pre_ctx = text[max(0, m.start() - 60):m.start()].lower()
+        if any(credit in pre_ctx for credit in ("levert av", "design av", "utviklet av", "nettside av", "webdesign", "produsert av")):
+            continue
         phone = _norm_phone(m.group(0))
         if phone:
             return phone, m.group(0).strip()[:160]
