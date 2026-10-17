@@ -290,14 +290,43 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     return (no_hosts + other_hosts)[:16]
 
 
-def _accept_proof(proof: str | None, assessment: dict[str, Any], method: str) -> bool:
-    """Exact org number always proves the entity. Address+postcode alone does not: managers, landlords and
-    federations share a registered address, so it is accepted only on a guessed/search domain whose page also
-    carries most of the legal name, never on a registry e-mail domain (often the manager's own site)."""
+def _is_care_of(profile: dict[str, Any] | None) -> bool:
+    if not isinstance(profile, dict):
+        return False
+    ev = profile.get("evidence") or {}
+    live_val = (ev.get("registry_live") or {}).get("value") or {}
+    raw_val = (ev.get("registry") or {}).get("value") or {}
+    reg_addr = (
+        " ".join(
+            str(x)
+            for a in (live_val.get("business_address"), live_val.get("postal_address"))
+            if isinstance(a, dict)
+            for x in (a.get("adresse") or [])
+        )
+        + " "
+        + str(raw_val.get("forretningsadresse.adresse") or "")
+        + " "
+        + str(raw_val.get("postadresse.adresse") or "")
+    )
+    return bool(re.search(r"\b(c/o|v/)", reg_addr, re.IGNORECASE))
+
+
+def _accept_proof(
+    proof: str | None,
+    assessment: dict[str, Any],
+    method: str,
+    profile: dict[str, Any] | None = None,
+) -> bool:
+    """Exact org number always proves the entity. Address+postcode alone does not: managers, landlords,
+    federations and care-of (c/o, v/) hosts share a registered address, so it is accepted only on a
+    guessed/search domain whose page also carries most of the legal name, never on a registry e-mail
+    domain or when the entity is registered c/o or v/ another party."""
     if not proof:
         return False
     if proof.startswith("exact organisation number"):
         return True
+    if _is_care_of(profile):
+        return False
     return method != "registry_email_domain" and assessment.get("score", 0) >= 0.85
 
 
@@ -337,7 +366,7 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
             if (record.get("value") or {}).get("pages"):
                 gated = apply_website_identity_gate(profile, record)
                 assessment = gated["assessment"] or {}
-            ok = _accept_proof(proof, assessment, method)
+            ok = _accept_proof(proof, assessment, method, profile)
             if ok:
                 exact = proof.startswith("exact organisation number")
                 assessment["publishable"] = True
@@ -546,7 +575,11 @@ import urllib.request  # noqa: E402  (kept after helpers to keep imports grouped
 
 
 NEWS_SEGMENTS = {"nyheter", "news", "aktuelt", "blogg", "blog", "presse", "press", "pressemeldinger", "artikler", "innlegg", "post", "posts"}
-NOT_NEWS_SEGMENTS = {"produkt", "produkter", "product", "products", "shop", "butikk", "kategori", "category", "collections", "brands", "merker"}
+NOT_NEWS_SEGMENTS = {
+    "produkt", "produkter", "product", "products", "shop", "butikk",
+    "kategori", "kategorier", "category", "categories", "collections", "brands", "merker",
+    "tag", "tags", "post-tag", "post-tags", "author", "forfatter", "page", "side", "arkiv", "archive", "feed",
+}
 CAREER_SEGMENTS = {"karriere", "career", "careers", "ledige-stillinger", "stillinger", "rekruttering", "jobs", "job", "jobb"}
 CAREER_TEXT_RE = re.compile(r"\b(karriere|careers?|ledige stillinger|rekruttering|jobs?|jobb)\b", re.I)
 NEWS_TEXT_RE = re.compile(r"\b(nyheter|news|aktuelt|blogg|blog|presse|press)\b", re.I)
@@ -572,9 +605,11 @@ def _is_career(path: str, text: str = "") -> bool:
 
 
 def _is_news(path: str, text: str = "") -> bool:
-    """News section: whole path segment or anchor word, and not a product/shop category called 'nyheter'."""
+    """News section: whole path segment or anchor word, and not a product/shop/tag/category/pagination page."""
     segs = _segments(path)
     if any(s in NOT_NEWS_SEGMENTS for s in segs):
+        return False
+    if len(segs) >= 2 and segs[-1].isdigit():
         return False
     if segs and re.fullmatch(r"[a-z]{2}(-[a-z]{2})?", segs[0]):
         segs = segs[1:]  # language prefix: /no/nyheter
@@ -760,7 +795,10 @@ def _parse_feed(raw: bytes, base: str) -> list[dict[str, str]]:
 
 
 ARTICLE_TYPES = {"newsarticle", "article", "blogposting", "reportagenewsarticle", "pressrelease"}
-NOT_ARTICLE_SEGMENTS = {"page", "side", "tag", "tags", "kategori", "category", "author", "forfatter", "feed", "arkiv", "archive"}
+NOT_ARTICLE_SEGMENTS = {
+    "page", "side", "tag", "tags", "post-tag", "post-tags",
+    "kategori", "kategorier", "category", "categories", "author", "forfatter", "feed", "arkiv", "archive",
+}
 
 
 def _iso_date(text: str) -> str:
@@ -844,7 +882,11 @@ def _news_articles(sections: list[str], candidates: list[str], host: str, max_ar
     Returns (items, provenance per item, requests used). At most one section page and ``max_articles`` article pages.
     """
     requests = 0
-    urls = list(candidates)
+    urls = [
+        u for u in candidates
+        if not any(s in NOT_ARTICLE_SEGMENTS for s in _segments(urllib.parse.urlparse(u).path))
+        and not (_segments(urllib.parse.urlparse(u).path) or [""])[-1].isdigit()
+    ]
     if sections and len(urls) < max_articles:
         _NET.last_requests = 1
         sraw, sfinal = _get(sections[0], timeout=5.0)
@@ -861,7 +903,8 @@ def _news_articles(sections: list[str], candidates: list[str], host: str, max_ar
             continue
         title, date, kind, span = meta
         direct = afinal or url
-        if not _same_site(direct, host) or any(i["url"] == direct for i in items):
+        direct_segs = _segments(urllib.parse.urlparse(direct).path)
+        if not _same_site(direct, host) or any(s in NOT_ARTICLE_SEGMENTS for s in direct_segs) or (direct_segs and direct_segs[-1].isdigit()) or any(i["url"] == direct for i in items):
             continue
         items.append({"title": title, "url": direct, "date": date, "date_kind": kind})
         prov.append({"item": direct, "source_url": direct, "sha256": _sha(araw), "span": f"{title} | {span}"})

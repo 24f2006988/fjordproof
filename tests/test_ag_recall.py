@@ -410,6 +410,92 @@ class ExtrasExtractionTests(unittest.TestCase):
         self.assertEqual(jobs[0]["url"], "https://testselskap.no/jobs/senior-radgiver-oslo")
         self.assertEqual(fp["value"]["item_sources"]["job_postings"][0]["source_url"], "https://testselskap.no/karriere")
 
+    def test_accept_proof_rejects_care_of_address_without_exact_org_number(self) -> None:
+        co_profile = {
+            "organisation_number": "816559472",
+            "name": "TEAMTEC WASTE TO ENERGY AS",
+            "evidence": {
+                "registry_live": {
+                    "value": {
+                        "business_address": {"adresse": ["c/o TeamTec AS", "Nyvei 41"], "postnummer": "4900"},
+                    }
+                }
+            },
+        }
+        v_profile = {
+            "organisation_number": "999888777",
+            "name": "EIENDOM INVEST AS",
+            "evidence": {
+                "registry": {
+                    "value": {
+                        "forretningsadresse.adresse": "v/ Advokatfirmaet Hansen, Storgata 1",
+                    }
+                }
+            },
+        }
+        normal_profile = {
+            "organisation_number": "924585463",
+            "name": "RB PROFF PARTNER AS",
+            "evidence": {
+                "registry_live": {
+                    "value": {
+                        "business_address": {"adresse": ["Storgata 10"], "postnummer": "0155"},
+                    }
+                }
+            },
+        }
+        addr_proof = "registered street address and postcode printed on https://teamtec.no/"
+        org_proof = "exact organisation number printed on https://teamtec.no/"
+        self.assertFalse(footprint_plus._accept_proof(addr_proof, {"score": 0.95}, "brand_token_guess", co_profile))
+        self.assertFalse(footprint_plus._accept_proof(addr_proof, {"score": 0.95}, "name_slug_guess", v_profile))
+        self.assertTrue(footprint_plus._accept_proof(org_proof, {"score": 0.65}, "brand_token_guess", co_profile))
+        self.assertTrue(footprint_plus._accept_proof(org_proof, {"score": 0.65}, "name_slug_guess", v_profile))
+        self.assertTrue(footprint_plus._accept_proof(addr_proof, {"score": 0.95}, "name_slug_guess", normal_profile))
+
+    def test_news_excludes_tag_category_and_pagination_urls(self) -> None:
+        for bad_path in (
+            "/news/post-tags/bwms",
+            "/news/post-tags/ejectors",
+            "/nyheter/tag/energi",
+            "/nyheter/tags/klima",
+            "/blogg/category/tips",
+            "/nyheter/kategori/pressemelding",
+            "/news/author/admin",
+            "/nyheter/page/2",
+            "/nyheter/2",
+        ):
+            self.assertFalse(footprint_plus._is_news(bad_path), f"Expected _is_news({bad_path!r}) to be False")
+
+        self.assertTrue(footprint_plus._is_news("/news/new-contract-signed"))
+        self.assertTrue(footprint_plus._is_news("/nyheter/aarsrapport-2025"))
+
+        article_html = (
+            b'<html><head><meta property="article:published_time" content="2025-05-10"/></head>'
+            b'<body><h1>Real Article</h1></body></html>'
+        )
+        section_html = (
+            b'<html><body>'
+            b'<a href="/news/post-tags/bwms">BWMS</a>'
+            b'<a href="/news/tag/marine">Marine</a>'
+            b'<a href="/news/category/events">Events</a>'
+            b'<a href="/news/author/editor">Editor</a>'
+            b'<a href="/news/page/2">Page 2</a>'
+            b'<a href="/news/real-article">Real Article</a>'
+            b'</body></html>'
+        )
+        pages = {
+            "https://example.no/news": section_html,
+            "https://example.no/news/real-article": article_html,
+            "https://example.no/news/post-tags/bwms": article_html,
+        }
+        with mock.patch.object(footprint_plus, "_get", lambda u, *a, **k: (pages.get(u), u)):
+            items, _, _ = footprint_plus._news_articles(
+                ["https://example.no/news"],
+                ["https://example.no/news/post-tags/bwms", "https://example.no/news/page/2"],
+                "example.no",
+            )
+        self.assertEqual([i["url"] for i in items], ["https://example.no/news/real-article"])
+
 
 if __name__ == "__main__":
     unittest.main()
