@@ -232,9 +232,54 @@ class FooterAndRegistryRecheckTests(unittest.TestCase):
 class ExtrasExtractionTests(unittest.TestCase):
     def setUp(self) -> None:
         website.clear_website_caches()
+        footprint_plus.clear_search_caches()
 
     def tearDown(self) -> None:
         website.clear_website_caches()
+        footprint_plus.clear_search_caches()
+
+    def test_google_candidate_hosts_wired_cached_and_counted(self) -> None:
+        profile = {
+            "organisation_number": "985589003",
+            "name": "TEST SELSKAP AS",
+            "evidence": {"registry": {"value": {"epostadresse": "post@regdomain.com"}}},
+        }
+        calls: list[str] = []
+
+        def fake_google(prof, timeout=8.0):
+            calls.append(str(prof.get("organisation_number")))
+            return ["googlefound.com"], 1, "google_custom_search"
+
+        with mock.patch.object(footprint_plus, "google_candidate_hosts", fake_google):
+            hosts = footprint_plus.candidate_hosts(profile)
+            # Placed right after registry_email_domain and prioritized ahead of .com slug guesses
+            self.assertEqual(hosts[0], ("regdomain.com", "registry_email_domain"))
+            self.assertEqual(hosts[1], ("googlefound.com", "google_search_candidate"))
+            self.assertEqual(len(calls), 1)
+
+            # Second call for the same org number (e.g. retry_discovery) must use cache and make 0 new requests
+            footprint_plus.clear_search_caches()
+            calls.clear()
+
+            def fake_fetch(host, **kwargs):
+                return {"status": "source_error", "note": "timed out"}, {"requests": 1, "bytes": 0}
+
+            with mock.patch.object(footprint_plus, "_resolves", lambda h: h == "googlefound.com"), \
+                 mock.patch.object(footprint_plus, "fetch_website", fake_fetch):
+                found1, m1 = footprint_plus.discover_website(profile, timeout=8.0)
+                found2, m2 = footprint_plus.discover_website(profile, timeout=12.0)
+
+        self.assertIsNone(found1)
+        self.assertIsNone(found2)
+        self.assertEqual(len(calls), 1)
+        # First pass counts 1 google search request + 1 fetch_website request = 2
+        self.assertEqual(m1["requests"], 2)
+        # Retry pass uses cached google candidate (0 search requests) + 1 fetch_website request = 1
+        self.assertEqual(m2["requests"], 1)
+        # _accept_proof treats google_search_candidate like brave_search_candidate
+        self.assertTrue(footprint_plus._accept_proof("registered street address and postcode printed on https://googlefound.com/", {"score": 0.85}, "google_search_candidate"))
+        self.assertFalse(footprint_plus._accept_proof("registered street address and postcode printed on https://googlefound.com/", {"score": 0.70}, "google_search_candidate"))
+        self.assertTrue(footprint_plus._accept_proof("exact organisation number printed on https://googlefound.com/", {"score": 0.40}, "google_search_candidate"))
 
     def test_candidate_hosts_hyphen_prefix_segments_and_freemail_local(self) -> None:
         p1 = {"name": "A-TEC AS", "evidence": {}}

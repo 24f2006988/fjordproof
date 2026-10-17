@@ -19,6 +19,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 from .evidence import evidence, utc_now
+from .google_search import google_candidate_hosts
 from .identity import _tokens, apply_website_identity_gate, assess_social_identity
 from .website import (
     SAFE_OPENER,
@@ -55,6 +56,17 @@ GENERIC_SLUG_TOKENS = {
     "barnehage", "interior", "farge", "marked", "media", "digital",
 }
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+
+_SEARCH_CACHE_LOCK = threading.Lock()
+_GOOGLE_CANDIDATE_CACHE: dict[str, list[str]] = {}
+_BRAVE_CANDIDATE_CACHE: dict[str, list[str]] = {}
+
+
+def clear_search_caches() -> None:
+    """Clear per-run search candidate caches (used by tests)."""
+    with _SEARCH_CACHE_LOCK:
+        _GOOGLE_CANDIDATE_CACHE.clear()
+        _BRAVE_CANDIDATE_CACHE.clear()
 
 
 def _brave_search_candidates(profile: dict[str, Any], api_key: str, timeout: float = 8.0) -> list[str]:
@@ -114,6 +126,9 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     tokens = _tokens(profile.get("name"))
     raw_name = str(profile.get("name") or "").strip().casefold()
+    org_key = re.sub(r"\D", "", str(profile.get("organisation_number") or ""))
+    search_timeout = float(getattr(_NET, "search_timeout", 8.0))
+    search_reqs = 0
 
     # 1. Registered email domains (from registry bulk, live, and subunits)
     emails: list[str] = []
@@ -151,11 +166,41 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
                     ):
                         freemail_locals.append(slug_local)
 
-    # 2. Brave Search candidate (if key present in env)
+    # 2a. Google Search / Places candidates (once per company per run; off unless env keys set)
+    g_cached: list[str] | None = None
+    if org_key:
+        with _SEARCH_CACHE_LOCK:
+            g_cached = _GOOGLE_CANDIDATE_CACHE.get(org_key)
+    if g_cached is not None:
+        g_hosts = g_cached
+    else:
+        g_hosts, g_reqs, g_provider = google_candidate_hosts(profile, timeout=search_timeout)
+        search_reqs += int(g_reqs or 0)
+        if org_key and (g_reqs or g_provider is not None or g_hosts):
+            with _SEARCH_CACHE_LOCK:
+                _GOOGLE_CANDIDATE_CACHE[org_key] = list(g_hosts)
+    for g_host in g_hosts:
+        out.append((g_host, "google_search_candidate"))
+
+    # 2b. Brave Search candidate (if key present in env; once per company per run)
     brave_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
     if brave_key:
-        for b_host in _brave_search_candidates(profile, brave_key):
+        b_cached: list[str] | None = None
+        if org_key:
+            with _SEARCH_CACHE_LOCK:
+                b_cached = _BRAVE_CANDIDATE_CACHE.get(org_key)
+        if b_cached is not None:
+            b_hosts = b_cached
+        else:
+            b_hosts = _brave_search_candidates(profile, brave_key, timeout=search_timeout)
+            search_reqs += 1
+            if org_key:
+                with _SEARCH_CACHE_LOCK:
+                    _BRAVE_CANDIDATE_CACHE[org_key] = list(b_hosts)
+        for b_host in b_hosts:
             out.append((b_host, "brave_search_candidate"))
+
+    _NET.search_requests = search_reqs
 
     # 3. Free-mail local-part brand candidates (subject to full _accept_proof gate)
     for fl in freemail_locals:
@@ -238,7 +283,7 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     for host, method in out:
         if host not in seen:
             seen.add(host)
-            if method in {"registry_email_domain", "brave_search_candidate"} or host.endswith(".no"):
+            if method in {"registry_email_domain", "google_search_candidate", "brave_search_candidate"} or host.endswith(".no"):
                 no_hosts.append((host, method))
             else:
                 other_hosts.append((host, method))
@@ -265,7 +310,11 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
     metrics = {"requests": 0, "bytes": 0, "transient": 0}
     net_errors_before = _transient_count()
     tested = 0
-    for host, method in candidate_hosts(profile):
+    _NET.search_requests = 0
+    _NET.search_timeout = timeout
+    hosts = candidate_hosts(profile)
+    metrics["requests"] += getattr(_NET, "search_requests", 0)
+    for host, method in hosts:
         if not _resolves(host):
             continue
         tested += 1
