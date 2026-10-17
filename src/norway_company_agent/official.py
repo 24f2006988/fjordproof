@@ -84,6 +84,7 @@ def normalize_financials(body: Any) -> dict[str, Any]:
             "currency": item.get("valuta"),
             "revenue": _get(item, "resultatregnskapResultat", "driftsresultat", "driftsinntekter", "sumDriftsinntekter"),
             "operating_result": _get(item, "resultatregnskapResultat", "driftsresultat", "driftsresultat"),
+            "wage_costs": _get(item, "resultatregnskapResultat", "driftsresultat", "driftskostnad", "loennskostnad"),
             "profit_before_tax": _get(item, "resultatregnskapResultat", "ordinaertResultatFoerSkattekostnad"),
             "annual_result": _get(item, "resultatregnskapResultat", "aarsresultat"),
             "assets": _get(item, "eiendeler", "sumEiendeler"),

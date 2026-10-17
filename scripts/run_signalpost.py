@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -21,8 +22,9 @@ from norway_company_agent.budget import BudgetGuard  # noqa: E402
 from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.footprint_plus import discover_website, extract_footprint  # noqa: E402
+from norway_company_agent.workforce import fetch_workforce  # noqa: E402
 
-MODULES = "registry,accounting_obligation,registry_live,financials,financial_history,roles,group,locations,website,external_footprint"
+MODULES = "registry,accounting_obligation,registry_live,financials,financial_history,roles,group,locations,website,external_footprint,workforce"
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -58,10 +60,11 @@ def main() -> None:
     p.add_argument("--plus-workers", type=int, default=24, help="threads for website discovery/footprint (many different hosts; Brreg is not hit here)")
     p.add_argument("--max-runtime-seconds", type=float, default=2400.0, help="maximum wallclock runtime in seconds (default: 2400 = 40m)")
     p.add_argument("--max-requests", type=int, default=None, help="maximum outbound requests (default: batch scaled)")
+    p.add_argument("--ocr-workers", type=int, default=max(1, min(4, (os.cpu_count() or 2) - 1)), help="threads reading man-years from filed annual-account copies")
     a = p.parse_args()
     out = Path(a.outdir)
     profiles_path, env_path, report_path = out / "profiles.jsonl", out / "envelopes.jsonl", out / "run-report.json"
-    base_modules = ",".join(MODULES.split(",")[:-1])
+    base_modules = ",".join(MODULES.split(",")[:-2])  # website discovery, footprint and workforce run in this script
     max_reqs = a.max_requests if a.max_requests is not None else max(1800, int(a.expected_count * 15))
     budget = BudgetGuard(max_runtime_seconds=a.max_runtime_seconds, max_requests=max_reqs)
     cmd = [sys.executable, str(ROOT / "scripts" / "run_competition_batch.py"), "--organisations", a.organisations,
@@ -162,6 +165,22 @@ def main() -> None:
         profile["run_metrics"]["plus_requests"] = profile["run_metrics"].get("plus_requests", 0) + m["requests"]
         return profile
 
+    def workforce(profile: dict) -> None:
+        """Runs after website work: OCR load during discovery made slow-but-live sites time out (a-seafood.com, smoke-033)."""
+        org = profile["organisation_number"]
+        if budget.is_exhausted(safety_margin_seconds=300.0, safety_margin_requests=100):
+            profile["evidence"]["workforce"] = evidence("workforce", "budget_exhausted", "system_budget_guard", "https://builderr.ai",
+                                                        note="Budget guard active; annual-account copy not read")
+            return
+        try:
+            rec, used = fetch_workforce(org, str(profile.get("latest_submitted_accounts") or "") or None, profile)
+        except Exception as exc:  # noqa: BLE001  never drop a company
+            rec, used = evidence("workforce", "source_error", "official_annual_account_copy", "https://data.brreg.no/regnskapsregisteret",
+                                 note=f"{type(exc).__name__}"), 0
+        profile["evidence"]["workforce"] = rec
+        budget.record_requests(used)
+        profile["run_metrics"]["workforce_requests"] = used
+
     retry: set[str] = set()
     with ThreadPoolExecutor(a.plus_workers) as pool:
         profiles = list(pool.map(plus, profiles))
@@ -174,13 +193,17 @@ def main() -> None:
             profiles = list(pool.map(lambda pr: retry_footprint(pr) if pr["organisation_number"] in fp_retry else pr, profiles))
     report["discovery_retries"] = len(retry)
     report["footprint_retries"] = len(fp_retry)
+    for pr in profiles:
+        pr.setdefault("run_metrics", {})
+    with ThreadPoolExecutor(a.ocr_workers) as pool:
+        list(pool.map(workforce, profiles))
     completed = utc_now()
     envelopes = [terminal_envelope(pr, run_id=a.run_id, modules=MODULES.split(","), started_at=report["started_at"], completed_at=completed) for pr in profiles]
     for e in envelopes:
         e["changes"] = e["profile"].get("changes_since_previous", [])
         to_contract(e)
     validation = validate_envelopes(envelopes, a.expected_count)
-    plus_requests = sum(pr.get("run_metrics", {}).get("plus_requests", 0) for pr in profiles)
+    plus_requests = sum(pr.get("run_metrics", {}).get("plus_requests", 0) + pr.get("run_metrics", {}).get("workforce_requests", 0) for pr in profiles)
     report.update({"modules": MODULES.split(","), "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})
     report["operations"]["requests"] += plus_requests
     report["operations"]["third_party_cost_usd"] = 0

@@ -241,6 +241,21 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
                              f"Brreg Regnskapsregisteret aarsregnskap/kopi/{org}/aar = {_lit(fh_val.get('years'))}") if fh_present else [],
     })
 
+    # Man-years from the filed annual account's own notes page (read from the official copy).
+    wf_rec = records.get("workforce", {})
+    wf_val = wf_rec.get("value") or {}
+    wf_present = wf_rec.get("status") == "available" and wf_val.get("full_time_equivalents") is not None
+    claims.append({
+        "field": "workforce_fte",
+        "value": wf_val.get("full_time_equivalents") if wf_present else None,
+        "period": {"accounts_year": wf_val.get("accounts_year")} if wf_present else None,
+        "availability": "available" if wf_present else ("not_available" if wf_rec.get("status") in {"available", "not_found", "budget_exhausted"} else "failed"),
+        "confidence": 0.95 if wf_present else 0.0,
+        "evidence_ids": cite("workforce", "workforce_fte",
+                             f"Brreg annual-account copy {org} {wf_val.get('accounts_year')}, NOTEOPPLYSNINGER page {wf_val.get('page')}: "
+                             f"{wf_val.get('span')} (OCR confidence {wf_val.get('ocr_confidence')})") if wf_present else [],
+    })
+
     # Granular leadership roles
     roles_rec = records.get("roles", {})
     roles_ok = roles_rec.get("status") == "available"
@@ -457,7 +472,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     envelope["evidence"] = evidence
     envelope["errors"] = errors
     envelope["operations"] = {
-        "requests": int(metrics.get("requests", 0)) + int(metrics.get("plus_requests", 0)),
+        "requests": int(metrics.get("requests", 0)) + int(metrics.get("plus_requests", 0)) + int(metrics.get("workforce_requests", 0)),
         "runtime_ms": int(sum(metrics.get("latencies_ms", []))),
         "third_party_cost_usd": 0,
     }

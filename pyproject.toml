@@ -8,6 +8,8 @@ dependencies = [
   "lxml>=6,<7",
   "pydantic>=2.12,<3",
   "pypdf>=6,<7",
+  "rapidocr-onnxruntime>=1.4,<2",
+  "opencv-python-headless>=4.10",
   "tldextract>=5.3,<6",
   "trafilatura>=2.0,<3",
 ]
@@ -25,3 +27,5 @@ sentiment = [
 
 [tool.uv]
 package = false
+# rapidocr asks for opencv-python, which needs libGL on minimal Linux; the headless build provides the same cv2 module.
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
