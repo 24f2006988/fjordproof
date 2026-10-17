@@ -242,12 +242,15 @@ function compareView(){
 function summary(d){
   const p = el("div", {class:"panel summary"}, el("h2", {text:"Summary"}));
   const add = (...parts) => p.append(el("p", {}, parts));
+  const syn = d.syn || {};
+  const asmt = (syn.statements || []).find(x => x.topic === "assessment");
+  if (syn.headline) p.append(el("p", {class:"headline"}, el("strong", {text: syn.headline}), refs(d, asmt ? asmt.evidence_ids : claim(d,"name")?.e)));
   const legal = val(d,"legal_form"), mun = val(d,"municipality"), ind = val(d,"industry");
   const idRef = claim(d,"name")?.e;
   add(d.name, legal ? " is registered as " + legal : " is registered", mun ? " in " + mun : "", " (organisation number " + d.org + ")", refs(d, idRef), ". ", status(d)[0] === "Active in registry" ? "The registry shows no bankruptcy or liquidation." : status(d)[0] + " according to the registry.", refs(d, claim(d,"insolvency_status")?.e));
   add(ind ? "Registered activity: " + ind.label + " (industry code " + ind.code + ")." : "No industry code is registered.", refs(d, claim(d,"industry")?.e));
   const a = accounts(d), l = a[a.length-1];
-  if (l) add("Newest filed " + (l.account_type === "KONSERN" ? "group accounts (KONSERN)" : l.account_type === "SELSKAP" ? "company accounts (SELSKAP)" : "accounts") + " (" + (l.period?.fraDato||"?") + " to " + (l.period?.tilDato||"?") + "): revenue " + money(l.revenue) + " " + l.currency + ", operating result " + money(l.operating_result) + ", annual result " + money(l.annual_result) + ", equity " + money(l.equity) + ".", refs(d, claim(d,"annual_accounts")?.e), a.length > 1 ? " " + a.length + " years of accounts are listed below." : "");
+  if (l) add("Newest figures in the accounts register, " + (l.account_type === "KONSERN" ? "group accounts (KONSERN)" : l.account_type === "SELSKAP" ? "company accounts (SELSKAP)" : "accounts") + " (" + (l.period?.fraDato||"?") + " to " + (l.period?.tilDato||"?") + "): revenue " + money(l.revenue) + " " + l.currency + ", operating result " + money(l.operating_result) + ", annual result " + money(l.annual_result) + ", equity " + money(l.equity) + ".", refs(d, claim(d,"annual_accounts")?.e), a.length > 1 ? " " + a.length + " years of accounts are listed below." : "");
   else add("No annual accounts were found in the public accounts register.", refs(d, claim(d,"annual_accounts")?.e));
   const emp = val(d,"employees");
   add(emp != null ? "The registry reports " + emp + " employees." : "The registry reports no employee count, so none is stated.", refs(d, claim(d,"employees")?.e));
@@ -256,10 +259,9 @@ function summary(d){
   const wc = claim(d,"official_website"); const weak = site && wc.c != null && wc.c < 0.9;
   add(site ? (weak ? "The registry lists this website, but the page does not confirm it belongs to this exact company (it may be a brand, franchise or shared site): " : "A website was matched to this company: ") : "No website could be verified for this company. ", site ? link(site) : "", refs(d, wc?.e));
   const act = activity(d); if (act.length){ const latest = act.map(x => x.date).filter(Boolean).sort().pop(); add(act.length + " dated public items were found on the company site; the latest is dated " + latest + ".", refs(d, claim(d,"external_footprint")?.e)); }
-  const syn = d.syn || {};
-  (syn.statements || []).filter(x => x.topic === "trend" || x.topic === "news" || x.topic === "hiring").forEach(x => add(x.text, refs(d, x.evidence_ids)));
+  (syn.statements || []).filter(x => x.topic === "trend" || x.topic === "news" || x.topic === "hiring" || (x.topic === "finances" && /equity ratio|as submitted/i.test(x.text))).forEach(x => add(x.text, refs(d, x.evidence_ids)));
   if ((syn.signals || []).length) p.append(el("p", {}, el("strong", {text:"Signals: "}), syn.signals.map((x, i) => el("span", {}, i ? "; " : "", x.text, refs(d, x.evidence_ids)))));
-  const ch = d.changes; add(ch.length ? ch.length + " changes since the previous run (listed below)." : "No earlier snapshot to compare with, so this run is the baseline. Later runs list any changes here and keep the earlier evidence.");
+  const ch = d.changes; add(syn.changes || (ch.length ? ch.length + " changes since the previous run (listed below)." : "No earlier snapshot to compare with, so this run is the baseline. Later runs list any changes here and keep the earlier evidence."));
   return p;
 }
 function unknowns(d){

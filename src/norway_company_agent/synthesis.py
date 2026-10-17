@@ -118,36 +118,73 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
             parts.append(f"{wp} registered sub-unit{'s' if wp != 1 else ''} (workplaces)")
         say("size", "Size: " + " and ".join(parts) + ".", "employees", "registered_workplaces_count")
 
-    # Finances: latest filing plus change against the previous filing when both are present.
+    # Finances: newest filing of one scope, the multi-year trend, and a rule-based assessment.
     acc = (val("annual_accounts") or {}).get("records") or []
     acc = single_scope_accounts(acc)
+    source_changes: list[str] = []  # changes visible inside the sources themselves (year on year)
+    assessment: list[str] = []
+    period = ""
     if acc:
         last = acc[-1]
         lp = last.get("period") or {}
         period = (lp.get("tilDato") or "")[:4] or "the newest retained period"
         scope = ACCOUNT_SCOPE.get(last.get("account_type"), "accounts")
         span = f" ({lp['fraDato']} to {lp['tilDato']}, {last.get('currency') or 'currency not stated'})" if lp.get("fraDato") and lp.get("tilDato") else ""
-        say("finances", f"Newest filed {scope}, {period}{span}: revenue {_nok(last.get('revenue'))}, operating result "
+        say("finances", f"Newest figures in the accounts register ({scope}), {period}{span}: revenue {_nok(last.get('revenue'))}, operating result "
             f"{_nok(last.get('operating_result'))}, annual result {_nok(last.get('annual_result'))}, "
-            f"equity {_nok(last.get('equity'))}.", "annual_accounts", "revenue", "annual_result", "total_equity")
-        if last.get("annual_result") is not None and last["annual_result"] < 0:
-            flag("loss_making", f"The company reported a loss in {period}.", "annual_accounts")
-        if last.get("equity") is not None and last["equity"] < 0:
+            f"equity {_nok(last.get('equity'))}, total assets {_nok(last.get('assets'))}.",
+            "annual_accounts", "revenue", "annual_result", "total_equity", "total_assets")
+        submitted = (claims.get("latest_accounts_year") or {})
+        if submitted.get("source_field") == "sisteInnsendteAarsregnskap" and str(submitted.get("value") or "") > period:
+            say("finances", f"The registry records accounts for {submitted['value']} as submitted, but the accounts register returned "
+                f"figures only up to {period}; the {period} figures are therefore not the newest filing.", "latest_accounts_year")
+            flag("newer_filing_pending", f"Accounts for {submitted['value']} are registered as submitted; their figures were not yet available.", "latest_accounts_year")
+        res, eq, assets = last.get("annual_result"), last.get("equity"), last.get("assets")
+        if res is not None:
+            assessment.append(f"annual {'loss' if res < 0 else 'profit'} {_nok(abs(res))} in {period}")
+            if res < 0:
+                flag("loss_making", f"The company reported a loss in {period}.", "annual_accounts")
+        if eq is not None and eq < 0:
+            assessment.append(f"negative equity at the end of {period}")
             flag("negative_equity", f"Equity was negative at the end of {period}.", "annual_accounts")
+        elif eq is not None and assets:
+            ratio = eq / assets * 100
+            assessment.append(f"equity ratio {ratio:.0f}%")
+            say("finances", f"Equity ratio {ratio:.0f}% at the end of {period} (equity {_nok(eq)} / total assets {_nok(assets)}, computed from the filed figures).",
+                "total_equity", "total_assets")
+            if ratio < 10:
+                flag("thin_equity", f"Equity is below 10% of total assets ({ratio:.0f}%) at the end of {period}.", "total_equity", "total_assets")
         if len(acc) > 1:
-            prev = acc[-2]
-            pyear = (prev.get("period") or {}).get("tilDato", "")[:4]
+            years = [((r.get("period") or {}).get("tilDato") or "")[:4] for r in acc]
+            first, prev = acc[0], acc[-2]
+            pyear = years[-2]
+            series = ", ".join(f"{y} {_nok(r.get('revenue'))}" for y, r in zip(years, acc))
             r0, r1 = prev.get("revenue"), last.get("revenue")
-            if r0 and r1 is not None:
-                say("trend", f"Revenue changed {_pct(r1, r0)} from {pyear} ({_nok(r0)}) to {period} ({_nok(r1)}).", "annual_accounts")
-                if r1 >= r0 * 1.2:
-                    flag("revenue_growth", f"Revenue grew {_pct(r1, r0)} year on year.", "annual_accounts")
-                elif r1 <= r0 * 0.8:
-                    flag("revenue_decline", f"Revenue fell {_pct(r1, r0)} year on year.", "annual_accounts")
+            if r1 is not None and any(r.get("revenue") is not None for r in acc[:-1]):
+                text = f"Revenue by year: {series}."
+                if r0:
+                    text += f" Change {pyear} to {period}: {_pct(r1, r0)}."
+                    source_changes.append(f"revenue {_pct(r1, r0)} from {pyear} to {period}")
+                    if r1 >= r0 * 1.2:
+                        flag("revenue_growth", f"Revenue grew {_pct(r1, r0)} from {pyear} to {period}.", "annual_accounts")
+                        assessment.append(f"revenue {_pct(r1, r0)} year on year")
+                    elif r1 <= r0 * 0.8:
+                        flag("revenue_decline", f"Revenue fell {_pct(r1, r0)} from {pyear} to {period}.", "annual_accounts")
+                        assessment.append(f"revenue {_pct(r1, r0)} year on year")
+                    else:
+                        assessment.append(f"revenue {_pct(r1, r0)} year on year")
+                if len(acc) > 2 and first.get("revenue") and r1 is not None:
+                    text += f" Over {years[0]} to {period}: {_pct(r1, first['revenue'])}."
+                say("trend", text, "annual_accounts")
             a0, a1 = prev.get("annual_result"), last.get("annual_result")
-            if a0 is not None and a1 is not None and (a0 < 0) != (a1 < 0):
-                say("trend", f"The annual result turned from {'a loss' if a0 < 0 else 'a profit'} in {pyear} to "
-                    f"{'a loss' if a1 < 0 else 'a profit'} in {period}.", "annual_accounts")
+            if a0 is not None and a1 is not None:
+                if (a0 < 0) != (a1 < 0):
+                    say("trend", f"The annual result turned from {'a loss' if a0 < 0 else 'a profit'} in {pyear} ({_nok(a0)}) to "
+                        f"{'a loss' if a1 < 0 else 'a profit'} in {period} ({_nok(a1)}).", "annual_accounts")
+                source_changes.append(f"annual result {_nok(a0)} in {pyear} to {_nok(a1)} in {period}")
+            e0, e1 = prev.get("equity"), last.get("equity")
+            if e0 is not None and e1 is not None and _nok(e0) != _nok(e1):
+                source_changes.append(f"equity {_nok(e0)} to {_nok(e1)}")
     elif (claims.get("annual_accounts") or {}).get("availability") == "not_available":
         say("finances", "No filed annual accounts were found in the public accounts register.", "annual_accounts")
 
@@ -163,6 +200,17 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         people.append(f"no auditor (audit opt-out decided {val('audit_exemption')})")
     if people:
         say("leadership", "Registered roles: " + ", ".join(people) + ".", "ceo", "board_chair", "auditor", "audit_exemption")
+    # Role registrations changed in the two years before this run (Brreg's per-role last-changed date).
+    run_day = str(envelope.get("completed_at") or envelope.get("started_at") or "")[:10]
+    if len(run_day) == 10 and run_day[:4].isdigit():
+        cutoff = f"{int(run_day[:4]) - 2}{run_day[4:]}"
+        recent = sorted((r for r in ((val("roles") or {}).get("roles") or [])
+                         if not r.get("inactive") and cutoff <= str(r.get("last_changed") or "") <= run_day),
+                        key=lambda r: str(r.get("last_changed")), reverse=True)
+        if recent:
+            items = [f"{r.get('role')} {_name(r.get('name') or r.get('organisation_number'))} ({r.get('last_changed')})" for r in recent[:4]]
+            say("leadership", "Role registrations changed in the two years before this run: " + "; ".join(items) + ".", "roles")
+            source_changes.append("role registrations changed: " + "; ".join(items))
     group = val("group_structure")
     if group:
         kids = group.get("children") or []
@@ -205,13 +253,37 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         unknowns.append({"field": field, "label": label, "availability": state, "reason": reason})
 
     changes = envelope.get("changes") or []
+    in_sources = ("Changes visible in the sources (filed accounts, role register): " + "; ".join(source_changes) + ".") if source_changes else ""
     if changes:
         fields = sorted({str(c.get("field")) for c in changes})
-        change_text = f"{len(changes)} material change{'s' if len(changes) != 1 else ''} since the previous run: {', '.join(fields)}."
+        change_text = f"{len(changes)} material change{'s' if len(changes) != 1 else ''} since the previous run: {', '.join(fields)}." + (" " + in_sources if in_sources else "")
     else:
-        change_text = "No earlier snapshot to compare with; this run is the baseline and later runs report changes against it."
+        change_text = (in_sources + " " if in_sources else "") + "No earlier snapshot of this agent to compare with; this run is the baseline and later runs report changes against it."
 
-    headline = statements[0]["text"] if statements else f"Organisation number {org}: no registry record could be read."
+    # Overall assessment: a rule-based conclusion that only restates the cited facts above.
+    status = val("insolvency_status") or {}
+    if status.get("bankrupt") or status.get("liquidating"):
+        assessment.insert(0, "bankruptcy or liquidation registered")
+    if site:
+        assessment.append("verified company website")
+    elif (claims.get("official_website") or {}).get("availability") in {"not_available", "ambiguous"}:
+        assessment.append("no verified website")
+    if news:
+        assessment.append(f"company news up to {news[0]['published_date']}")
+    if jobs:
+        assessment.append("hiring")
+    if assessment:
+        say("assessment", "Assessment (rule-based, from the facts above): " + "; ".join(assessment) + ".",
+            "annual_accounts", "total_equity", "total_assets", "insolvency_status", "official_website", "news_items", "job_postings")
+
+    if name:
+        what = f"{industry.get('label').lower()}" if industry and industry.get("label") else "registered entity"
+        since = f" since {str(founded)[:4]}" if founded else ""
+        head = f"{name} ({org}): {_form(form)[2:].lstrip()}{' in ' + mun if mun else ''}, {what}{since}"
+        head += f"; {'; '.join(assessment)}." if assessment else "."
+        headline = head
+    else:
+        headline = statements[0]["text"] if statements else f"Organisation number {org}: no registry record could be read."
     return {
         "headline": headline,
         "statements": statements,

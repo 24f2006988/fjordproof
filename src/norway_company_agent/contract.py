@@ -157,7 +157,16 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             claim["currency"] = latest_acc.get("currency") if field != "latest_accounts_year" else None
             claim["source_record_id"] = latest_acc.get("record_id")
         claims.append(claim)
-    fin_scalar("latest_accounts_year", (latest_acc.get("period") or {}).get("tilDato", "")[:4] or profile.get("latest_submitted_accounts"))
+    figures_year = (latest_acc.get("period") or {}).get("tilDato", "")[:4]
+    submitted_year = str(profile.get("latest_submitted_accounts") or "")
+    if submitted_year.isdigit() and submitted_year > figures_year and ident_ok:
+        # The registry records a newer submitted filing than the accounts register returned figures for:
+        # report the registry's year from the registry record, never the older figures' year as "latest".
+        claims.append({"field": "latest_accounts_year", "period": None, "value": submitted_year, "availability": "available",
+                       "confidence": 0.99, "evidence_ids": [f"ev-{ident}"], "source_field": "sisteInnsendteAarsregnskap",
+                       "note": f"figures in the accounts register end with {figures_year or 'no period'}"})
+    else:
+        fin_scalar("latest_accounts_year", figures_year or profile.get("latest_submitted_accounts"))
     fin_scalar("revenue", latest_acc.get("revenue"))
     fin_scalar("operating_result", latest_acc.get("operating_result"))
     fin_scalar("profit_before_tax", latest_acc.get("profit_before_tax"))
