@@ -131,5 +131,103 @@ class SlowSiteAndCachingTests(unittest.TestCase):
         self.assertEqual(metrics["requests"], 3)
 
 
+class FooterAndRegistryRecheckTests(unittest.TestCase):
+    def setUp(self) -> None:
+        website.clear_website_caches()
+
+    def tearDown(self) -> None:
+        website.clear_website_caches()
+
+    def test_footer_identity_text_excerpt_and_body_fallback(self) -> None:
+        from norway_company_agent.identity import apply_website_identity_gate
+
+        html = (
+            b"<html><head><title>Velkommen</title></head>"
+            b"<body><div>Kort forside for selskapet.</div>"
+            b"<footer>Nordisk Takst og Raadgivning AS | Org.nr. 985 589 003</footer></body></html>"
+        )
+
+        def fake_open(req, timeout=None):
+            if req.full_url.endswith("/robots.txt"):
+                return _FakeResponse(b"User-agent: *\nAllow: /\n", req.full_url, "text/plain")
+            return _FakeResponse(html, "https://nordisktakst.no/")
+
+        profile = {"organisation_number": "985589003", "name": "NORDISK TAKST OG RÅDGIVNING AS", "evidence": {}}
+        with mock.patch.object(website, "assert_public_url", lambda u: None), \
+             mock.patch.object(website.SAFE_OPENER, "open", fake_open):
+            rec, _ = website.fetch_website("https://nordisktakst.no/", crawl_secondary=False)
+
+        self.assertIn("985 589 003", rec["value"]["identity_text_excerpt"])
+        self.assertTrue(len(rec["value"]["main_text_excerpt"]) > 20)
+        gated = apply_website_identity_gate(profile, rec)
+        self.assertTrue(gated["assessment"]["publishable"])
+        self.assertEqual(gated["assessment"]["score"], 1.0)
+
+    def test_standalone_org_number_check_rejects_concatenated_digits(self) -> None:
+        from norway_company_agent.identity import assess_website_identity
+
+        profile = {
+            "organisation_number": "985589003",
+            "name": "ANDRE SELSKAP AS",
+            "evidence": {
+                "website": {
+                    "status": "available",
+                    "source_url": "https://example.no/",
+                    "value": {
+                        "title": "Velkommen",
+                        "main_text_excerpt": "Postboks 9855, 8900 Brønnøysund, avdeling 3",
+                    },
+                }
+            },
+        }
+        assessment = assess_website_identity(profile)
+        self.assertFalse(assessment["publishable"])
+        self.assertNotEqual(assessment["score"], 1.0)
+
+    def test_registry_listed_site_promoted_only_with_exact_org_number(self) -> None:
+        profile = {"organisation_number": "985589003", "name": "BÆRUM EIENDOMSTAKSERING AS", "evidence": {}}
+        site = {
+            "status": "available",
+            "source_url": "https://www.betakst.no/",
+            "value": {
+                "final_url": "https://www.betakst.no/",
+                "title": "Forsiden - Bærum Eiendomstaksering",
+                "identity_assessment": {"publishable": False, "score": 0.65, "reasons": ["partial legal-name overlap only"]},
+                "social_link_assessments": [{"platform": "facebook", "url": "https://facebook.com/betakst", "publishable": True}],
+                "social_links": [],
+            },
+        }
+        pages = {
+            "https://www.betakst.no/": '<a href="/kontakt">Kontakt</a><a href="https://facebook.com/betakst">FB</a>',
+            "https://www.betakst.no/kontakt": 'Kontakt oss på <a href="mailto:post@betakst.no">post@betakst.no</a>. Org.nr 985 589 003',
+        }
+        with mock.patch.object(footprint_plus, "_get", lambda url, *a, **k: ((pages.get(url).encode() if pages.get(url) else None), url)):
+            fp, _ = footprint_plus.extract_footprint(profile, site)
+
+        self.assertTrue(site["value"]["identity_assessment"]["publishable"])
+        self.assertEqual(site["value"]["identity_assessment"]["score"], 1.0)
+        self.assertEqual(fp["status"], "available")
+        self.assertEqual(fp["value"]["contact"]["email"], "post@betakst.no")
+
+        # Address-only proof on an unproven registry-listed site must NOT promote it
+        site_addr_only = {
+            "status": "available",
+            "source_url": "https://www.betakst.no/",
+            "value": {
+                "final_url": "https://www.betakst.no/",
+                "title": "Forsiden",
+                "identity_assessment": {"publishable": False, "score": 0.65, "reasons": []},
+            },
+        }
+        with mock.patch.object(
+            footprint_plus,
+            "hard_identity_proof",
+            lambda *a, **k: ("registered street address and postcode printed on https://www.betakst.no/kontakt", {"requests": 1}),
+        ):
+            fp2, _ = footprint_plus.extract_footprint(profile, site_addr_only)
+        self.assertFalse(site_addr_only["value"]["identity_assessment"]["publishable"])
+        self.assertEqual(fp2["status"], "not_found")
+
+
 if __name__ == "__main__":
     unittest.main()

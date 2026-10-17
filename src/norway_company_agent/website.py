@@ -279,6 +279,22 @@ def _priority_links(base_url: str, soup: BeautifulSoup, limit: int = 4) -> list[
     return [url for url, _ in sorted(candidates.items(), key=lambda item: (item[1], item[0]))[:limit]]
 
 
+def _identity_text_excerpt(soup: BeautifulSoup) -> str:
+    nodes = soup.select(
+        'footer, address, [class*="footer"], [id*="footer"], '
+        '[itemprop="legalName"], [itemprop="address"], [itemprop="telephone"], [itemprop="email"]'
+    )
+    return " ".join(node.get_text(" ", strip=True) for node in nodes)[:2000]
+
+
+def _visible_body_text(html: str) -> str:
+    clean_soup = BeautifulSoup(html, "lxml")
+    for tag in clean_soup.select("script, style, noscript, template, svg"):
+        tag.decompose()
+    body = clean_soup.body or clean_soup
+    return body.get_text(" ", strip=True)
+
+
 def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max_bytes: int) -> tuple[dict[str, Any] | None, list[dict[str, str]], int, int, int, str | None]:
     allowed, r_req = _robots_check(url, timeout)
     if not allowed:
@@ -305,10 +321,15 @@ def _fetch_secondary_page(url: str, *, homepage_domain: str, timeout: float, max
         page_html = raw.decode("utf-8", errors="replace")
         page_soup = BeautifulSoup(page_html, "lxml")
         page_text = trafilatura.extract(page_html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""
+        if len(page_text.strip()) < 100:
+            fallback_text = _visible_body_text(page_html)
+            if len(fallback_text) > len(page_text.strip()):
+                page_text = fallback_text
         page = {
             "url": final_url,
             "title": page_soup.title.get_text(" ", strip=True)[:500] if page_soup.title else "",
             "main_text_excerpt": page_text[:5000],
+            "identity_text_excerpt": _identity_text_excerpt(page_soup),
             "content_sha256": __import__("hashlib").sha256(raw).hexdigest(),
         }
         return page, _social_links(final_url, page_soup), req_count, (len(raw) if cached is None else 0), elapsed, None
@@ -376,7 +397,13 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
         html = raw.decode("utf-8", errors="replace")
         soup = BeautifulSoup(html, "lxml")
         structured = extruct.extract(html, base_url=final_url, syntaxes=["json-ld", "microdata", "opengraph"])
-        text = trafilatura.extract(html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""
+        raw_text = trafilatura.extract(html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""
+        text = raw_text
+        if len(text.strip()) < 100:
+            fallback_text = _visible_body_text(html)
+            if len(fallback_text) > len(text.strip()):
+                text = fallback_text
+        identity_excerpt = _identity_text_excerpt(soup)
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
         description_tag = soup.select_one('meta[name="description"], meta[property="og:description"]')
         description = str(description_tag.get("content") or "").strip() if description_tag else ""
@@ -387,12 +414,19 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             "title": title[:500],
             "description": description[:2000],
             "main_text_excerpt": text[:5000],
+            "identity_text_excerpt": identity_excerpt,
             "social_links": _social_links(final_url, soup),
             "structured_organisations": _jsonld_organisations(structured),
             "content_sha256": __import__("hashlib").sha256(raw).hexdigest(),
             "extraction_state": _extraction_state(text, soup),
         }
-        pages = [{"url": final_url, "title": title[:500], "main_text_excerpt": text[:5000], "content_sha256": value["content_sha256"]}]
+        pages = [{
+            "url": final_url,
+            "title": title[:500],
+            "main_text_excerpt": text[:5000],
+            "identity_text_excerpt": identity_excerpt,
+            "content_sha256": value["content_sha256"],
+        }]
         social = value["social_links"]
         crawl_errors = []
         bytes_received = len(raw) if cached is None else 0

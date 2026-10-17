@@ -750,6 +750,22 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     metrics = {"requests": 0, "bytes": 0}
     source = website.get("source_url") or ""
     value = website.get("value") or {}
+    assessment = value.get("identity_assessment") or {}
+    if website.get("status") == "available" and assessment.get("publishable") is not True and assessment.get("score", 0) >= 0.3 and source:
+        proof, pm = hard_identity_proof(profile, website, MAX_PROOF_PAGES, 8.0)
+        metrics["requests"] += pm["requests"]
+        if _accept_proof(proof, assessment, "registry_email_domain"):
+            assessment["publishable"] = True
+            assessment["score"] = 1.0
+            assessment["status"] = "exact"
+            assessment["reasons"] = list(assessment.get("reasons", [])) + [proof]
+            value["identity_assessment"] = assessment
+            if value.get("social_link_assessments") and not value.get("social_links"):
+                value["social_links"] = [
+                    {"platform": item["platform"], "url": item["url"]}
+                    for item in value["social_link_assessments"]
+                    if item.get("publishable")
+                ]
     if website.get("status") != "available" or (value.get("identity_assessment") or {}).get("publishable") is not True:
         return evidence("external_footprint", "not_found", "company_owned_site", "https://data.brreg.no",
                         note="No identity-verified company website; nothing published."), metrics
