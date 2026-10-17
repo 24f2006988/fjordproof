@@ -1,7 +1,7 @@
 {
-  "run_id": "smoke-028",
-  "started_at": "2026-10-17T09:01:31.184071Z",
-  "completed_at": "2026-10-17T09:07:30.329851Z",
+  "run_id": "smoke-029",
+  "started_at": "2026-10-17T10:40:34.541950Z",
+  "completed_at": "2026-10-17T10:47:10.609746Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -26,10 +26,10 @@
     "bulk_note": "bulk snapshot not supplied"
   },
   "operations": {
-    "requests": 1276,
-    "bytes": 2448448,
-    "p50_ms": 1188,
-    "p95_ms": 3702,
+    "requests": 1260,
+    "bytes": 2447216,
+    "p50_ms": 1218,
+    "p95_ms": 2702,
     "third_party_cost_usd": 0,
     "budget_exhausted": false
   },
@@ -44,5 +44,5 @@
     },
     "invalid_states": []
   },
-  "discovery_retries": 27
+  "discovery_retries": 31
 }
