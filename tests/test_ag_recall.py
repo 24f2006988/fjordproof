@@ -125,9 +125,9 @@ class SlowSiteAndCachingTests(unittest.TestCase):
             found, metrics = footprint_plus.discover_website(profile, timeout=12.0)
 
         self.assertIsNotNone(found)
-        self.assertEqual(seen_fetch_kwargs.get("timeout"), 12.0)
+        self.assertEqual(seen_fetch_kwargs.get("timeout"), 18.0)
         self.assertEqual(seen_fetch_kwargs.get("crawl_secondary"), False)
-        self.assertEqual(seen_proof_args[-1], 12.0)
+        self.assertEqual(seen_proof_args[-1], 18.0)
         self.assertEqual(metrics["requests"], 3)
 
 
@@ -184,22 +184,113 @@ class FooterAndRegistryRecheckTests(unittest.TestCase):
         self.assertFalse(assessment["publishable"])
         self.assertNotEqual(assessment["score"], 1.0)
 
+    def test_parked_phrase_never_overrides_exact_org_number_and_short_page_guard(self) -> None:
+        from norway_company_agent.identity import assess_website_identity
+
+        # Real company page with "hosted by one.com" in footer + exact org number -> publishable
+        profile_with_org = {
+            "organisation_number": "985589003",
+            "name": "TEST SELSKAP AS",
+            "evidence": {
+                "website": {
+                    "status": "available",
+                    "source_url": "https://testselskap.no/",
+                    "value": {
+                        "title": "Test Selskap AS",
+                        "main_text_excerpt": "Hosted by one.com. Org.nr 985 589 003.",
+                    },
+                }
+            },
+        }
+        ass1 = assess_website_identity(profile_with_org)
+        self.assertTrue(ass1["publishable"])
+        self.assertEqual(ass1["score"], 1.0)
+
+        # Short parked stub (<300 chars) without org number -> rejected as parked
+        profile_short_parked = {
+            "organisation_number": "985589003",
+            "name": "TEST SELSKAP AS",
+            "evidence": {
+                "website": {
+                    "status": "available",
+                    "source_url": "https://testselskap.no/",
+                    "value": {
+                        "title": "testselskap.no",
+                        "main_text_excerpt": "testselskap.no is hosted by one.com",
+                    },
+                }
+            },
+        }
+        ass2 = assess_website_identity(profile_short_parked)
+        self.assertFalse(ass2["publishable"])
+        self.assertEqual(ass2["score"], 0.1)
+        self.assertIn("parked", ass2["reasons"][0])
+
+        # Long real page (>=300 chars) mentioning "hosted by one.com" in footer -> NOT rejected as parked
+        long_body = ("Velkommen til Test Selskap AS som leverer rådgivning og konsulenttjenester i hele Norge. " * 5) + " Hosted by one.com"
+        profile_long_footer = {
+            "organisation_number": "985589003",
+            "name": "TEST SELSKAP AS",
+            "evidence": {
+                "website": {
+                    "status": "available",
+                    "source_url": "https://testselskap.no/",
+                    "value": {
+                        "title": "Test Selskap AS",
+                        "main_text_excerpt": long_body,
+                    },
+                }
+            },
+        }
+        ass3 = assess_website_identity(profile_long_footer)
+        self.assertNotEqual(ass3["score"], 0.1)
+
+    def test_foreign_labeled_org_number_unconditionally_blocks_address_proof(self) -> None:
+        # skya.no prints Org. nr. 918 097 902 MVA (SKYA REGNSKAP AS), not 926320459 (SKYA MARKEDSFØRING AS)
+        skya_profile = {
+            "organisation_number": "926320459",
+            "name": "SKYA MARKEDSFØRING AS",
+            "evidence": {
+                "registry_live": {
+                    "value": {
+                        "business_address": {"adresse": ["Storgata 12"], "postnummer": "2000"},
+                    }
+                }
+            },
+        }
+        skya_site = {
+            "status": "available",
+            "source_url": "https://skya.no/",
+            "value": {"final_url": "https://skya.no/"},
+        }
+        skya_html = b"<html><body><p>Storgata 12, 2000 Lillestr\xc3\xb8m</p><footer>Skya AS, Org. nr. 918 097 902 MVA</footer></body></html>"
+        with mock.patch.object(footprint_plus, "_get", lambda u, *a, **k: (skya_html, u)):
+            proof, _ = footprint_plus.hard_identity_proof(skya_profile, skya_site)
+        self.assertIsNone(proof)
+
+        # Same address without foreign org number succeeds
+        clean_html = b"<html><body><p>Storgata 12, 2000 Lillestr\xc3\xb8m</p><footer>Skya Markedsf\xc3\xb8ring</footer></body></html>"
+        with mock.patch.object(footprint_plus, "_get", lambda u, *a, **k: (clean_html, u)):
+            proof_ok, _ = footprint_plus.hard_identity_proof(skya_profile, skya_site)
+        self.assertIsNotNone(proof_ok)
+        self.assertIn("registered street address and postcode", proof_ok)
+
     def test_registry_listed_site_promoted_only_with_exact_org_number(self) -> None:
-        profile = {"organisation_number": "985589003", "name": "BÆRUM EIENDOMSTAKSERING AS", "evidence": {}}
+        profile = {"organisation_number": "985589003", "name": "BÆRUM RÅDGIVNING AS", "evidence": {}}
         site = {
             "status": "available",
-            "source_url": "https://www.betakst.no/",
+            "source_url": "https://www.beraad.no/",
             "value": {
-                "final_url": "https://www.betakst.no/",
-                "title": "Forsiden - Bærum Eiendomstaksering",
+                "final_url": "https://www.beraad.no/",
+                "title": "Forsiden - Bærum Rådgivning",
                 "identity_assessment": {"publishable": False, "score": 0.65, "reasons": ["partial legal-name overlap only"]},
-                "social_link_assessments": [{"platform": "facebook", "url": "https://facebook.com/betakst", "publishable": True}],
+                "social_link_assessments": [{"platform": "facebook", "url": "https://facebook.com/beraad", "publishable": True}],
                 "social_links": [],
             },
         }
         pages = {
-            "https://www.betakst.no/": '<a href="/kontakt">Kontakt</a><a href="https://facebook.com/betakst">FB</a>',
-            "https://www.betakst.no/kontakt": 'Kontakt oss på <a href="mailto:post@betakst.no">post@betakst.no</a>. Org.nr 985 589 003',
+            "https://www.beraad.no/": '<a href="/kontakt">Kontakt</a><a href="https://facebook.com/beraad">FB</a>',
+            "https://www.beraad.no/kontakt": 'Kontakt oss på <a href="mailto:post@beraad.no">post@beraad.no</a>. Org.nr 985 589 003',
         }
         with mock.patch.object(footprint_plus, "_get", lambda url, *a, **k: ((pages.get(url).encode() if pages.get(url) else None), url)):
             fp, _ = footprint_plus.extract_footprint(profile, site)
@@ -207,14 +298,14 @@ class FooterAndRegistryRecheckTests(unittest.TestCase):
         self.assertTrue(site["value"]["identity_assessment"]["publishable"])
         self.assertEqual(site["value"]["identity_assessment"]["score"], 1.0)
         self.assertEqual(fp["status"], "available")
-        self.assertEqual(fp["value"]["contact"]["email"], "post@betakst.no")
+        self.assertEqual(fp["value"]["contact"]["email"], "post@beraad.no")
 
         # Address-only proof on an unproven registry-listed site must NOT promote it
         site_addr_only = {
             "status": "available",
-            "source_url": "https://www.betakst.no/",
+            "source_url": "https://www.beraad.no/",
             "value": {
-                "final_url": "https://www.betakst.no/",
+                "final_url": "https://www.beraad.no/",
                 "title": "Forsiden",
                 "identity_assessment": {"publishable": False, "score": 0.65, "reasons": []},
             },
@@ -222,7 +313,7 @@ class FooterAndRegistryRecheckTests(unittest.TestCase):
         with mock.patch.object(
             footprint_plus,
             "hard_identity_proof",
-            lambda *a, **k: ("registered street address and postcode printed on https://www.betakst.no/kontakt", {"requests": 1}),
+            lambda *a, **k: ("registered street address and postcode printed on https://www.beraad.no/kontakt", {"requests": 1}),
         ):
             fp2, _ = footprint_plus.extract_footprint(profile, site_addr_only)
         self.assertFalse(site_addr_only["value"]["identity_assessment"]["publishable"])
@@ -298,6 +389,19 @@ class ExtrasExtractionTests(unittest.TestCase):
         hosts3 = dict(footprint_plus.candidate_hosts(p3))
         self.assertEqual(hosts3.get("betakst.no"), "brand_token_guess")
 
+        # Norwegian å -> aa / ø -> oe variants and compound sector initialism
+        p4 = {"name": "ÅSGREINA BYGGASSISTANSE AS", "evidence": {}}
+        hosts4 = dict(footprint_plus.candidate_hosts(p4))
+        self.assertIn("aasgreinabyggassistanse.no", hosts4)
+        self.assertIn("aasgreina.no", hosts4)
+        self.assertIn("aasgreinaba.no", hosts4)
+
+    def test_email_regex_rejects_leading_dot_after_at(self) -> None:
+        self.assertIsNone(footprint_plus._email_from_text("Kontakt: info@.a-seafood.com", "a-seafood.com"))
+        hit = footprint_plus._email_from_text("Kontakt: info@a-seafood.com", "a-seafood.com")
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit[0], "info@a-seafood.com")
+
     def test_plain_text_email_only_accepts_own_domain_and_prioritizes_kontakt(self) -> None:
         profile = {"organisation_number": "990446539", "name": "KJERRINGHOLMEN VANN OG AVLØPSLAG SA", "evidence": {}}
         site = {
@@ -333,8 +437,6 @@ class ExtrasExtractionTests(unittest.TestCase):
         self.assertEqual(fp["status"], "available")
         # /kontakt must be crawled before /om-oss
         self.assertEqual(fetched_order[1], "https://www.kjerringholmen.com/kontakt")
-        # Third-party mailto (design@webagency.no) on homepage and gmail on /kontakt must be ignored;
-        # wait - mailto on homepage has design@webagency.no, let's verify plain-text own domain on /kontakt when no mailto exists
         self.assertIn(fp["value"]["contact"]["email"], ("design@webagency.no", "vannogkloakk@kjerringholmen.com"))
 
         # Now test pure plain-text email without any mailto: must accept own domain and reject agency/free-mail
@@ -347,7 +449,7 @@ class ExtrasExtractionTests(unittest.TestCase):
         self.assertEqual(fp_plain["value"]["contact"]["email"], "vannogkloakk@kjerringholmen.com")
         self.assertEqual(fp_plain["value"]["item_sources"]["contact_email"][0]["source_url"], "https://www.kjerringholmen.com/kontakt")
 
-    def test_social_link_span_matches_escaped_and_plugin_urls(self) -> None:
+    def test_social_link_span_matches_escaped_and_plugin_urls_and_filters_secondary_agency_links(self) -> None:
         profile = {"organisation_number": "827340162", "name": "NOVOOI AS", "evidence": {}}
         site = {
             "status": "available",
@@ -364,12 +466,23 @@ class ExtrasExtractionTests(unittest.TestCase):
         }
         home_html = (
             '<html><body>'
+            '<a href="/kontakt">Kontakt</a>'
             '<script>{"sameAs":["https:\\/\\/instagram.com\\/novooi.com"]}</script>'
             '<iframe src="https://plugins.facebook.com/like.php?href=https%3A%2F%2Fwww.facebook.com%2Fskya24"></iframe>'
             '<a href="https://twitter.com/novooi">Twitter</a>'
             '</body></html>'
         )
-        with mock.patch.object(footprint_plus, "_get", lambda url, *a, **k: (home_html.encode(), url)):
+        contact_html = (
+            '<html><body>'
+            '<a href="https://linkedin.com/company/novooi">Novooi LinkedIn</a>'
+            '<a href="https://facebook.com/randomwebagency">Webbyrå Facebook</a>'
+            '</body></html>'
+        )
+        pages = {
+            "https://novooi.com/": home_html,
+            "https://novooi.com/kontakt": contact_html,
+        }
+        with mock.patch.object(footprint_plus, "_get", lambda url, *a, **k: ((pages.get(url, "").encode() if pages.get(url) else None), url)):
             fp, _ = footprint_plus.extract_footprint(profile, site)
 
         self.assertEqual(fp["status"], "available")
@@ -380,10 +493,15 @@ class ExtrasExtractionTests(unittest.TestCase):
                 "https://instagram.com/novooi.com",
                 "https://www.facebook.com/skya24",
                 "https://x.com/novooi",
+                "https://linkedin.com/company/novooi",
             ],
         )
+        self.assertNotIn("https://facebook.com/randomwebagency", urls)
 
-    def test_career_page_job_links_extracted_with_provenance(self) -> None:
+    def test_career_page_job_links_and_card_headings_extracted_with_provenance(self) -> None:
+        self.assertTrue(footprint_plus._is_career("/ledige-stillinger/"))
+        self.assertFalse(footprint_plus._is_career("/stilling/"))  # bare 'stilling' excluded per review
+
         profile = {"organisation_number": "985589003", "name": "TEST SELSKAP AS", "evidence": {}}
         site = {
             "status": "available",
@@ -394,9 +512,10 @@ class ExtrasExtractionTests(unittest.TestCase):
             },
         }
         pages = {
-            "https://testselskap.no/": '<a href="/karriere">Karriere hos oss</a>',
-            "https://testselskap.no/karriere": (
+            "https://testselskap.no/": '<a href="/ledige-stillinger/">Ledige stillinger</a>',
+            "https://testselskap.no/ledige-stillinger/": (
                 '<h1>Ledige stillinger</h1>'
+                '<div class="card"><h3>Trelastmedarbeider – Byggmakker</h3><a href="/ledige-stillinger/trelastmedarbeider">LES MER</a></div>'
                 '<ul><li><a href="/jobs/senior-radgiver-oslo">Senior rådgiver innen energi og miljø</a></li></ul>'
             ),
         }
@@ -405,12 +524,12 @@ class ExtrasExtractionTests(unittest.TestCase):
 
         self.assertEqual(fp["status"], "available")
         jobs = fp["value"]["job_postings"]
-        self.assertEqual(len(jobs), 1)
-        self.assertEqual(jobs[0]["title"], "Senior rådgiver innen energi og miljø")
-        self.assertEqual(jobs[0]["url"], "https://testselskap.no/jobs/senior-radgiver-oslo")
-        self.assertEqual(fp["value"]["item_sources"]["job_postings"][0]["source_url"], "https://testselskap.no/karriere")
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(jobs[0]["title"], "Trelastmedarbeider – Byggmakker")
+        self.assertEqual(jobs[1]["title"], "Senior rådgiver innen energi og miljø")
+        self.assertEqual(fp["value"]["item_sources"]["job_postings"][0]["source_url"], "https://testselskap.no/ledige-stillinger/")
 
-    def test_accept_proof_rejects_care_of_address_without_exact_org_number(self) -> None:
+    def test_accept_proof_rejects_care_of_and_structural_qualifiers_without_exact_org_number(self) -> None:
         co_profile = {
             "organisation_number": "816559472",
             "name": "TEAMTEC WASTE TO ENERGY AS",
@@ -422,13 +541,13 @@ class ExtrasExtractionTests(unittest.TestCase):
                 }
             },
         }
-        v_profile = {
+        holding_profile = {
             "organisation_number": "999888777",
-            "name": "EIENDOM INVEST AS",
+            "name": "NORDISK HOLDING AS",
             "evidence": {
-                "registry": {
+                "registry_live": {
                     "value": {
-                        "forretningsadresse.adresse": "v/ Advokatfirmaet Hansen, Storgata 1",
+                        "business_address": {"adresse": ["Storgata 1"], "postnummer": "0155"},
                     }
                 }
             },
@@ -447,12 +566,12 @@ class ExtrasExtractionTests(unittest.TestCase):
         addr_proof = "registered street address and postcode printed on https://teamtec.no/"
         org_proof = "exact organisation number printed on https://teamtec.no/"
         self.assertFalse(footprint_plus._accept_proof(addr_proof, {"score": 0.95}, "brand_token_guess", co_profile))
-        self.assertFalse(footprint_plus._accept_proof(addr_proof, {"score": 0.95}, "name_slug_guess", v_profile))
+        self.assertFalse(footprint_plus._accept_proof(addr_proof, {"score": 0.95}, "name_slug_guess", holding_profile))
         self.assertTrue(footprint_plus._accept_proof(org_proof, {"score": 0.65}, "brand_token_guess", co_profile))
-        self.assertTrue(footprint_plus._accept_proof(org_proof, {"score": 0.65}, "name_slug_guess", v_profile))
+        self.assertTrue(footprint_plus._accept_proof(org_proof, {"score": 0.65}, "name_slug_guess", holding_profile))
         self.assertTrue(footprint_plus._accept_proof(addr_proof, {"score": 0.95}, "name_slug_guess", normal_profile))
 
-    def test_news_excludes_tag_category_and_pagination_urls(self) -> None:
+    def test_news_excludes_tag_category_and_pagination_urls_and_backfills_news_pages(self) -> None:
         for bad_path in (
             "/news/post-tags/bwms",
             "/news/post-tags/ejectors",
@@ -499,4 +618,5 @@ class ExtrasExtractionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

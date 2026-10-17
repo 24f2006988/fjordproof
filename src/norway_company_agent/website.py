@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import http.client
 import json
 import ipaddress
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -41,18 +43,30 @@ _CACHE_LOCK = threading.Lock()
 _MAX_CACHE_ENTRIES = 1024
 _ROBOTS_CACHE: dict[str, urllib.robotparser.RobotFileParser | None] = {}
 _ROBOTS_BODY_CACHE: dict[str, bytes] = {}
+_ROBOTS_TIMEOUT: set[str] = set()
 _PAGE_CACHE: dict[str, tuple[bytes, str]] = {}
+
+
+def _is_timeout_exception(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return True
+    text = f"{exc} {reason}".lower()
+    return "timed out" in text or "timeout" in text
 
 
 def clear_website_caches() -> None:
     with _CACHE_LOCK:
         _ROBOTS_CACHE.clear()
         _ROBOTS_BODY_CACHE.clear()
+        _ROBOTS_TIMEOUT.clear()
         _PAGE_CACHE.clear()
 
 
 def _cache_page(url: str, raw: bytes, final_url: str | None = None) -> None:
-    if not raw or len(raw) > 800_000:
+    if not raw or len(raw) > 2_000_000:
         return
     resolved = final_url or url
     with _CACHE_LOCK:
@@ -149,16 +163,20 @@ def _robots_check(url: str, timeout: float) -> tuple[bool, int]:
             _ROBOTS_BODY_CACHE[origin] = raw
             _ROBOTS_BODY_CACHE[final_origin] = raw
         return parser.can_fetch(USER_AGENT, url), 1
-    except Exception:
+    except Exception as exc:
         # An unavailable robots file is not permission to ignore explicit site terms; callers retain
         # the URL and can route uncertain domains to review. For this bounded homepage POC, allow one
         # ordinary GET when robots.txt is absent rather than crawl deeper.
+        timed_out = _is_timeout_exception(exc)
         with _CACHE_LOCK:
             if len(_ROBOTS_CACHE) >= _MAX_CACHE_ENTRIES:
                 _ROBOTS_CACHE.clear()
                 _ROBOTS_BODY_CACHE.clear()
+                _ROBOTS_TIMEOUT.clear()
             _ROBOTS_CACHE[origin] = None
             _ROBOTS_BODY_CACHE[origin] = b""
+            if timed_out:
+                _ROBOTS_TIMEOUT.add(origin)
         return True, 1
 
 
@@ -373,6 +391,13 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
     allowed, r_req = _robots_check(normalized, timeout)
     if not allowed:
         return evidence("website", "blocked", "registry_linked_company_website", normalized, note="robots.txt disallows this user agent"), {"requests": r_req, "bytes": 0, "latencies_ms": []}
+    if not crawl_secondary:
+        parsed_norm = urllib.parse.urlparse(normalized)
+        norm_origin = f"{parsed_norm.scheme.lower()}://{parsed_norm.netloc.lower()}"
+        with _CACHE_LOCK:
+            robots_timed_out = norm_origin in _ROBOTS_TIMEOUT
+        if robots_timed_out:
+            return evidence("website", "source_error", "registry_linked_company_website", normalized, note="URLError: timed out"), {"requests": r_req, "bytes": 0, "latencies_ms": [int(timeout * 1000)]}
     started = time.monotonic()
     cached = _get_cached_page(normalized)
     try:
@@ -459,7 +484,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
         status = "not_found" if exc.code in {404, 410} else "source_error"
         return evidence("website", status, "registry_linked_company_website", normalized, note=f"HTTP {exc.code}"), {"requests": r_req + 1, "bytes": 0, "latencies_ms": [elapsed]}
     except urllib.error.URLError as exc:
-        if not supplied_scheme and normalized.startswith("https://"):
+        if not supplied_scheme and normalized.startswith("https://") and not _is_timeout_exception(exc):
             first_elapsed = int((time.monotonic() - started) * 1000)
             record, metrics = fetch_website("http://" + supplied_url, timeout=timeout, max_bytes=max_bytes, crawl_secondary=crawl_secondary)
             metrics["requests"] += r_req + 1
@@ -468,5 +493,11 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
         elapsed = int((time.monotonic() - started) * 1000)
         return evidence("website", "source_error", "registry_linked_company_website", normalized, note=f"URLError: {str(exc.reason)[:180]}"), {"requests": r_req + 1, "bytes": 0, "latencies_ms": [elapsed]}
     except Exception as exc:
+        if not supplied_scheme and normalized.startswith("https://") and not _is_timeout_exception(exc) and isinstance(exc, (http.client.HTTPException, ConnectionError, ssl.SSLError)):
+            first_elapsed = int((time.monotonic() - started) * 1000)
+            record, metrics = fetch_website("http://" + supplied_url, timeout=timeout, max_bytes=max_bytes, crawl_secondary=crawl_secondary)
+            metrics["requests"] += r_req + 1
+            metrics["latencies_ms"].insert(0, first_elapsed)
+            return record, metrics
         elapsed = int((time.monotonic() - started) * 1000)
         return evidence("website", "source_error", "registry_linked_company_website", normalized, note=f"{type(exc).__name__}: {str(exc)[:180]}"), {"requests": r_req + 1, "bytes": 0, "latencies_ms": [elapsed]}

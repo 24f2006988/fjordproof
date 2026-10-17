@@ -67,20 +67,28 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
         "her flytter snart en ny gjest", "has been informing visitors",
         "find the best information and most relevant links on all topics related to",
     )
+    short_page_parked_markers = (
+        "is parked", "parked domain", "this domain is parked",
+        "er parkert", "parkert hos", "domenet er parkert", "hosted by one.com",
+    )
     normalized_raw = unicodedata.normalize("NFKD", candidate_text).encode("ascii", "ignore").decode().casefold()
     homepage_token_sets = [set(_tokens(part)) for part in homepage_identity_parts if part]
     exact_homepage_name = bool(core and any(set(core).issubset(tokens) for tokens in homepage_token_sets))
-    substantive_homepage = len(str(value.get("main_text_excerpt") or "").strip()) >= 100
+    main_excerpt_len = len(str(value.get("main_text_excerpt") or "").strip())
+    substantive_homepage = main_excerpt_len >= 100
+    is_parked = any(marker in normalized_raw for marker in parked_markers) or (
+        main_excerpt_len < 300 and any(marker in normalized_raw for marker in short_page_parked_markers)
+    )
     is_business_sports_club = bool(re.search(r"(?:^|\s)B\.?\s*I\.?\s*L\.?(?:\s|$)", str(profile.get("name") or ""), re.I))
-    if any(marker in normalized_raw for marker in parked_markers):
-        score = 0.1
-        reasons.append("captured page is a parked, for-sale, or generic hosting placeholder")
-    elif is_business_sports_club and "bedriftsidrett" not in normalized_candidate_text and "b i l" not in normalized_candidate_text:
+    if is_business_sports_club and "bedriftsidrett" not in normalized_candidate_text and "b i l" not in normalized_candidate_text and not has_homepage_org:
         score = 0.3
         reasons.append("business sports-club entity points to the operating company's site without club evidence")
     elif has_homepage_org:
         score = 1.0
         reasons.append("exact organisation number appears in homepage identity evidence")
+    elif is_parked:
+        score = 0.1
+        reasons.append("captured page is a parked, for-sale, or generic hosting placeholder")
     elif len(core) >= 2 and exact_homepage_name:
         score = 0.95
         reasons.append("all normalized legal-name tokens appear together in homepage identity evidence")
