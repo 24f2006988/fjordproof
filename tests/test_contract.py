@@ -158,12 +158,44 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertEqual(rev["period"]["tilDato"], "2024-12-31")
         self.assertEqual(claims["latest_accounts_year"]["period"]["tilDato"], "2024-12-31")
         ev = {e["id"]: e for e in out["evidence"]}
-        self.assertEqual(rev["evidence_ids"], ["ev-financials-latest"])
+        self.assertEqual(rev["evidence_ids"], ["ev-financials-latest-revenue"])
+        span = ev["ev-financials-latest-revenue"]["claim_span"]
+        self.assertTrue(span.startswith("Brreg Regnskapsregisteret sumDriftsinntekter = 100.0;"))
+        self.assertIn("record 8", span)
+        self.assertIn("SELSKAP", span)
         self.assertIn("record 8", ev["ev-financials-latest"]["claim_span"])
-        self.assertIn("SELSKAP", ev["ev-financials-latest"]["claim_span"])
         fin = next(s["text"] for s in out["synthesis"]["statements"] if s["topic"] == "finances")
         self.assertIn("company accounts (SELSKAP)", fin)
         self.assertNotIn("950", fin)
+
+    def test_claim_spans_quote_the_source_value_and_filings_are_listed(self):
+        org = "123456789"
+        profile = {
+            "organisation_number": org, "name": "Eksempel AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
+            "evidence": {
+                "registry_live": evidence("registry_live", "available", "official_registry_live", f"https://data.brreg.no/enhetsregisteret/api/enheter/{org}",
+                    value={"email": "post@eksempel.no"}, content_sha256="a" * 64),
+                "roles": evidence("roles", "available", "official_roles", f"https://data.brreg.no/enhetsregisteret/api/enheter/{org}/roller",
+                    value={"roles": [{"name": "Kari Nordmann", "role_code": "DAGL", "role": "Daglig leder", "last_changed": "2024-01-02", "inactive": False}]}),
+                "financial_history": evidence("financial_history", "available", "official_annual_account_copies",
+                    f"https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/{org}/aar",
+                    value={"years": ["2024", "2025"], "pdfs": [{"year": "2025", "url": "u25"}, {"year": "2024", "url": "u24"}]}),
+            },
+            "run_metrics": {"requests": 3, "latencies_ms": [1], "plus_requests": 0},
+        }
+        env = terminal_envelope(profile, run_id="t", modules=["registry_live", "roles", "financial_history"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z")
+        out = to_contract(env)
+        claims = {c["field"]: c for c in out["claims"]}
+        ev = {e["id"]: e for e in out["evidence"]}
+        self.assertEqual(ev[claims["name"]["evidence_ids"][0]]["claim_span"], f'Brreg Enhetsregisteret {org}: navn = "Eksempel AS"')
+        self.assertIn('epostadresse = "post@eksempel.no"', ev[claims["registered_email"]["evidence_ids"][0]]["claim_span"])
+        self.assertEqual(ev[claims["name"]["evidence_ids"][0]]["content_sha256"], "a" * 64)  # same source snapshot as the base record
+        self.assertIn('Daglig leder (DAGL) = "Kari Nordmann"', ev[claims["ceo"]["evidence_ids"][0]]["claim_span"])
+        filings = claims["annual_account_filings"]
+        self.assertEqual(filings["availability"], "available")
+        self.assertEqual([f["year"] for f in filings["value"]], ["2025", "2024"])
+        self.assertIn('aar = ["2024", "2025"]', ev[filings["evidence_ids"][0]]["claim_span"])
+        self.assertTrue(ev[filings["evidence_ids"][0]]["source_url"].endswith(f"/kopi/{org}/aar"))
 
 
 if __name__ == "__main__":

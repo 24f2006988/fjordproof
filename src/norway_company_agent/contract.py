@@ -39,6 +39,37 @@ def _span(record: dict[str, Any], default: str) -> str:
     return text[:240]
 
 
+def _lit(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+# claim field -> Brreg Enhetsregisteret field the value is read from (quoted in the claim's evidence span)
+REGISTRY_KEYS = {
+    "name": "navn", "legal_form": "organisasjonsform.kode", "industry": "naeringskode1", "employees": "antallAnsatte",
+    "municipality": "forretningsadresse.kommune", "insolvency_status": "konkurs/underAvvikling",
+    "registered_office": "forretningsadresse", "postal_address": "postadresse", "registered_email": "epostadresse",
+    "registered_phone": "telefon", "share_capital": "kapital", "incorporation_date": "stiftelsesdato",
+    "vat_registered": "registrertIMvaregisteret", "audit_exemption": "fravalgRevisjonBeslutningsDato",
+}
+# claim field -> Brreg Regnskapsregisteret field
+ACCOUNT_KEYS = {
+    "latest_accounts_year": "regnskapsperiode.tilDato", "revenue": "sumDriftsinntekter", "operating_result": "driftsresultat",
+    "profit_before_tax": "ordinaertResultatFoerSkattekostnad", "annual_result": "aarsresultat", "total_assets": "sumEiendeler",
+    "total_equity": "sumEgenkapital", "total_debt": "sumGjeld",
+}
+
+# module claim -> literal summary of what the source returned
+MODULE_SPANS = {
+    "financials": lambda org, v: f"Brreg Regnskapsregisteret {org}: " + "; ".join(
+        f"record {r.get('record_id')} {r.get('account_type')} {(r.get('period') or {}).get('fraDato')} to {(r.get('period') or {}).get('tilDato')}"
+        for r in v.get("records") or []),
+    "roles": lambda org, v: f"Brreg roller {org}: " + "; ".join(
+        f"{r.get('role_code')} {r.get('name') or r.get('organisation_number')}" for r in v.get("roles") or [] if not r.get("inactive")),
+    "locations": lambda org, v: f"Brreg underenheter {org}: " + "; ".join(
+        f"{loc.get('organisation_number')} {loc.get('name')}" for loc in v.get("locations") or []),
+}
+
+
 def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     profile = envelope["profile"]
     records: dict[str, dict[str, Any]] = profile.get("evidence", {})
@@ -60,20 +91,35 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    by_id = {e["id"]: e for e in evidence}
+
+    def cite(base: str, field: str, span: str) -> list[str]:
+        """Evidence for one claim: the base source record, with a span quoting the exact source field and value."""
+        src = by_id.get(f"ev-{base}")
+        if not src:
+            return []
+        eid = f"ev-{base}-{field}"
+        if eid not in by_id:
+            by_id[eid] = {**src, "id": eid, "claim_span": span[:240]}
+            evidence.append(by_id[eid])
+        return [eid]
+
     claims = []
     # Identity claims come from the live registry record when available, else the bulk snapshot.
     ident = "registry_live" if records.get("registry_live", {}).get("status") == "available" else "registry"
     ident_ok = records.get(ident, {}).get("status") == "available"
+    register = "Brreg Enhetsregisteret" if ident == "registry_live" else "Brreg Enhetsregisteret bulk"
 
     def scalar(field: str, value: Any, ev_name: str = ident, conf: float = 0.99) -> None:
         present = ident_ok and value not in (None, "", [], {})
+        span = f"{register} {org}: {REGISTRY_KEYS.get(field, field)} = {_lit(value)}"
         claims.append(
             {
                 "field": field,
                 "value": value if present else None,
                 "availability": "available" if present else ("not_available" if ident_ok else "failed"),
                 "confidence": conf if present else 0.0,
-                "evidence_ids": [f"ev-{ev_name}"] if present and ev_name in records else [],
+                "evidence_ids": cite(ev_name, field, span) if present and ev_name in records else [],
             }
         )
 
@@ -135,23 +181,27 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     latest_acc = scoped[-1] if scoped else {}
     acc_period = latest_acc.get("period") or None
     fin_ev = []
-    if latest_acc and any(e["id"] == "ev-financials" for e in evidence):
-        base = next(e for e in evidence if e["id"] == "ev-financials")
+    fin_context = ""
+    if latest_acc and "ev-financials" in by_id:
         p = acc_period or {}
         fin_ev = ["ev-financials-latest"]
-        evidence.append({**base, "id": "ev-financials-latest", "claim_span": (
-            f"Brreg annual accounts record {latest_acc.get('record_id')} for {org}: "
-            f"{ACCOUNT_SCOPE.get(latest_acc.get('account_type'), latest_acc.get('account_type') or 'scope not stated')}, "
-            f"period {p.get('fraDato')} to {p.get('tilDato')}, currency {latest_acc.get('currency') or 'not stated'}")[:240]})
+        fin_context = (f"record {latest_acc.get('record_id')} for {org}: "
+                       f"{ACCOUNT_SCOPE.get(latest_acc.get('account_type'), latest_acc.get('account_type') or 'scope not stated')}, "
+                       f"period {p.get('fraDato')} to {p.get('tilDato')}, currency {latest_acc.get('currency') or 'not stated'}")
+        by_id["ev-financials-latest"] = {**by_id["ev-financials"], "id": "ev-financials-latest",
+                                         "claim_span": f"Brreg annual accounts {fin_context}"[:240]}
+        evidence.append(by_id["ev-financials-latest"])
     def fin_scalar(field: str, val: Any) -> None:
         present = fin_ok and val is not None
+        # The figure itself first, then the record, scope, period and currency it was read from.
+        span = f"Brreg Regnskapsregisteret {ACCOUNT_KEYS.get(field, field)} = {_lit(val)}; {fin_context}"
         claim = {
             "field": field,
             "period": acc_period if present else None,
             "value": val if present else None,
             "availability": "available" if present else ("not_available" if fin_rec.get("status") in {"available", "not_found"} else "failed"),
             "confidence": 0.99 if present else 0.0,
-            "evidence_ids": fin_ev if present else [],
+            "evidence_ids": cite("financials-latest", field, span) if present and fin_ev else [],
         }
         if present:
             claim["scope"] = latest_acc.get("account_type")
@@ -164,7 +214,8 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         # The registry records a newer submitted filing than the accounts register returned figures for:
         # report the registry's year from the registry record, never the older figures' year as "latest".
         claims.append({"field": "latest_accounts_year", "period": None, "value": submitted_year, "availability": "available",
-                       "confidence": 0.99, "evidence_ids": [f"ev-{ident}"], "source_field": "sisteInnsendteAarsregnskap",
+                       "confidence": 0.99, "source_field": "sisteInnsendteAarsregnskap",
+                       "evidence_ids": cite(ident, "latest_accounts_year", f"{register} {org}: sisteInnsendteAarsregnskap = {_lit(submitted_year)}"),
                        "note": f"figures in the accounts register end with {figures_year or 'no period'}"})
     else:
         fin_scalar("latest_accounts_year", figures_year or profile.get("latest_submitted_accounts"))
@@ -176,19 +227,35 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     fin_scalar("total_equity", latest_acc.get("equity"))
     fin_scalar("total_debt", latest_acc.get("debt"))
 
+    # Every annual account filed with the Register of Company Accounts: year + official copy URL.
+    fh_rec = records.get("financial_history", {})
+    fh_val = fh_rec.get("value") or {}
+    filings = fh_val.get("pdfs") or []
+    fh_present = fh_rec.get("status") == "available" and bool(filings)
+    claims.append({
+        "field": "annual_account_filings",
+        "value": filings if fh_present else None,
+        "availability": "available" if fh_present else ("not_available" if fh_rec.get("status") in {"available", "not_found"} else "failed"),
+        "confidence": 0.99 if fh_present else 0.0,
+        "evidence_ids": cite("financial_history", "annual_account_filings",
+                             f"Brreg Regnskapsregisteret aarsregnskap/kopi/{org}/aar = {_lit(fh_val.get('years'))}") if fh_present else [],
+    })
+
     # Granular leadership roles
     roles_rec = records.get("roles", {})
     roles_ok = roles_rec.get("status") == "available"
     roles_list = (roles_rec.get("value") or {}).get("roles") or []
     def role_scalar(field: str, code: str) -> None:
-        holder = next((r.get("name") or r.get("organisation_number") for r in roles_list if r.get("role_code") == code and not r.get("inactive")), None)
+        role = next((r for r in roles_list if r.get("role_code") == code and not r.get("inactive") and (r.get("name") or r.get("organisation_number"))), None)
+        holder = (role.get("name") or role.get("organisation_number")) if role else None
         present = roles_ok and holder is not None
+        span = f"Brreg roller {org}: {(role or {}).get('role') or code} ({code}) = {_lit(holder)}, last changed {(role or {}).get('last_changed')}"
         claims.append({
             "field": field,
             "value": holder if present else None,
             "availability": "available" if present else ("not_available" if roles_rec.get("status") in {"available", "not_found"} else "failed"),
             "confidence": 0.99 if present else 0.0,
-            "evidence_ids": ["ev-roles"] if present and "roles" in records else [],
+            "evidence_ids": cite("roles", field, span) if present else [],
         })
     role_scalar("ceo", "DAGL")
     role_scalar("board_chair", "LEDE")
@@ -206,7 +273,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         "value": board_members if (roles_ok and board_members) else None,
         "availability": "available" if (roles_ok and board_members) else ("not_available" if roles_rec.get("status") in {"available", "not_found"} else "failed"),
         "confidence": 0.99 if (roles_ok and board_members) else 0.0,
-        "evidence_ids": ["ev-roles"] if (roles_ok and board_members and "roles" in records) else [],
+        "evidence_ids": cite("roles", "board_members", f"Brreg roller {org}: Styremedlem (MEDL) = {_lit(board_members)}") if (roles_ok and board_members) else [],
     })
 
     # Granular workplaces count and details
@@ -218,7 +285,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         "value": len(loc_list) if loc_ok else None,
         "availability": "available" if loc_ok else ("not_available" if loc_rec.get("status") in {"available", "not_found"} else "failed"),
         "confidence": 0.99 if loc_ok else 0.0,
-        "evidence_ids": ["ev-locations"] if loc_ok and "locations" in records else [],
+        "evidence_ids": cite("locations", "registered_workplaces_count", f"Brreg underenheter {org}: {len(loc_list)} registered sub-units") if loc_ok else [],
     })
     workplaces = [
         {
@@ -236,7 +303,9 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         "value": workplaces if (loc_ok and workplaces) else None,
         "availability": "available" if (loc_ok and workplaces) else ("not_available" if loc_rec.get("status") in {"available", "not_found"} else "failed"),
         "confidence": 0.99 if (loc_ok and workplaces) else 0.0,
-        "evidence_ids": ["ev-locations"] if (loc_ok and workplaces and "locations" in records) else [],
+        "evidence_ids": cite("locations", "registered_workplaces", f"Brreg underenheter {org}: " + "; ".join(
+            f"{w['organisation_number']} {w['name']}, {(w.get('address') or {}).get('postnummer') or ''} {(w.get('address') or {}).get('poststed') or ''}".strip()
+            for w in workplaces)) if (loc_ok and workplaces) else [],
     })
 
     # Granular website details
@@ -354,13 +423,16 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             score = ((rec.get("value") or {}).get("identity_assessment") or {}).get("score")
             if rec.get("source_type") == "registry_linked_company_website" and (score is None or score < 0.9):
                 confidence = 0.5
+        ev_ids = [f"ev-{module}"]
+        if availability == "available" and module in MODULE_SPANS:
+            ev_ids = cite(module, field, MODULE_SPANS[module](org, value or {}))
         claims.append(
             {
                 "field": field,
                 "value": value if availability == "available" else None,
                 "availability": availability,
                 "confidence": confidence if availability == "available" else 0.0,
-                "evidence_ids": [f"ev-{module}"],
+                "evidence_ids": ev_ids,
             }
         )
 

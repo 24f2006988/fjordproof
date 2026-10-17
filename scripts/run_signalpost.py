@@ -22,7 +22,7 @@ from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.footprint_plus import discover_website, extract_footprint  # noqa: E402
 
-MODULES = "registry,accounting_obligation,registry_live,financials,roles,group,locations,website,external_footprint"
+MODULES = "registry,accounting_obligation,registry_live,financials,financial_history,roles,group,locations,website,external_footprint"
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -141,13 +141,39 @@ def main() -> None:
         profile["run_metrics"]["plus_requests"] = profile["run_metrics"].get("plus_requests", 0) + used
         return profile
 
+    def needs_footprint_retry(profile: dict) -> bool:
+        """A verified site whose footprint pass found nothing: under parallel load its pages often time out."""
+        site = profile["evidence"].get("website", {})
+        fp = profile["evidence"].get("external_footprint", {})
+        verified = site.get("status") == "available" and (site.get("value", {}).get("identity_assessment") or {}).get("publishable") is True
+        return verified and fp.get("status") in {"not_found", "source_error"}
+
+    def retry_footprint(profile: dict) -> dict:
+        if budget.is_exhausted(safety_margin_seconds=180.0, safety_margin_requests=100):
+            return profile
+        try:
+            fp, m = extract_footprint(profile, profile["evidence"]["website"])
+        except Exception:  # noqa: BLE001  the first-pass result stands
+            return profile
+        if fp.get("status") == "available":
+            profile["evidence"]["external_footprint"] = fp
+            profile["changes_since_previous"] = material_changes(previous.get(profile["organisation_number"]), profile)
+        budget.record_requests(m["requests"])
+        profile["run_metrics"]["plus_requests"] = profile["run_metrics"].get("plus_requests", 0) + m["requests"]
+        return profile
+
     retry: set[str] = set()
     with ThreadPoolExecutor(a.plus_workers) as pool:
         profiles = list(pool.map(plus, profiles))
     if retry:
         with ThreadPoolExecutor(4) as pool:
             profiles = list(pool.map(lambda pr: retry_discovery(pr) if pr["organisation_number"] in retry else pr, profiles))
+    fp_retry = {pr["organisation_number"] for pr in profiles if needs_footprint_retry(pr)}
+    if fp_retry:
+        with ThreadPoolExecutor(4) as pool:
+            profiles = list(pool.map(lambda pr: retry_footprint(pr) if pr["organisation_number"] in fp_retry else pr, profiles))
     report["discovery_retries"] = len(retry)
+    report["footprint_retries"] = len(fp_retry)
     completed = utc_now()
     envelopes = [terminal_envelope(pr, run_id=a.run_id, modules=MODULES.split(","), started_at=report["started_at"], completed_at=completed) for pr in profiles]
     for e in envelopes:
