@@ -1,7 +1,7 @@
 {
-  "run_id": "smoke-030",
-  "started_at": "2026-10-17T11:18:49.979544Z",
-  "completed_at": "2026-10-17T11:26:45.742682Z",
+  "run_id": "smoke-034",
+  "started_at": "2026-10-17T13:46:29.572647Z",
+  "completed_at": "2026-10-17T14:07:32.181333Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -16,7 +16,8 @@
     "group",
     "locations",
     "website",
-    "external_footprint"
+    "external_footprint",
+    "workforce"
   ],
   "registry": {
     "registry_snapshot_sha256": null,
@@ -27,10 +28,10 @@
     "bulk_note": "bulk snapshot not supplied"
   },
   "operations": {
-    "requests": 1371,
+    "requests": 1475,
     "bytes": 2454911,
     "p50_ms": 1233,
-    "p95_ms": 2077,
+    "p95_ms": 1656,
     "third_party_cost_usd": 0,
     "budget_exhausted": false
   },
@@ -45,6 +46,6 @@
     },
     "invalid_states": []
   },
-  "discovery_retries": 23,
-  "footprint_retries": 0
+  "discovery_retries": 33,
+  "footprint_retries": 1
 }
