@@ -151,7 +151,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         period = (lp.get("tilDato") or "")[:4] or "the newest retained period"
         scope = ACCOUNT_SCOPE.get(last.get("account_type"), "accounts")
         span = f" ({lp['fraDato']} to {lp['tilDato']}, {last.get('currency') or 'currency not stated'})" if lp.get("fraDato") and lp.get("tilDato") else ""
-        say("finances", f"Newest figures in the accounts register ({scope}), {period}{span}: revenue {_nok(last.get('revenue'))}, operating result "
+        say("finances", f"Newest figures in the accounts register, {scope}, {period}{span}: revenue {_nok(last.get('revenue'))}, operating result "
             f"{_nok(last.get('operating_result'))}, annual result {_nok(last.get('annual_result'))}, "
             f"equity {_nok(last.get('equity'))}, total assets {_nok(last.get('assets'))}.",
             "annual_accounts", "revenue", "annual_result", "total_equity", "total_assets")
@@ -171,7 +171,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         elif eq is not None and assets:
             fin_bits.append(f"equity of {eq / assets * 100:.0f}% of total assets ({_nok(eq)} of {_nok(assets)})")
         if fin_bits:
-            fin_summary = f"The newest figures in the accounts register ({scope}), for {period}, show " + ", ".join(fin_bits)
+            fin_summary = f"The newest figures in the accounts register, {scope}, for {period}, show " + ", ".join(fin_bits)
             if submitted.get("source_field") == "sisteInnsendteAarsregnskap" and str(submitted.get("value") or "") > period:
                 fin_summary += f"; accounts for {submitted['value']} are registered as submitted but their figures are not yet available"
         if res is not None:
