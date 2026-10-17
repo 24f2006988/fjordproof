@@ -171,7 +171,9 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         elif eq is not None and assets:
             fin_bits.append(f"equity of {eq / assets * 100:.0f}% of total assets ({_nok(eq)} of {_nok(assets)})")
         if fin_bits:
-            fin_summary = f"Its newest filed {scope}, for {period}, show " + ", ".join(fin_bits)
+            fin_summary = f"The newest figures in the accounts register ({scope}), for {period}, show " + ", ".join(fin_bits)
+            if submitted.get("source_field") == "sisteInnsendteAarsregnskap" and str(submitted.get("value") or "") > period:
+                fin_summary += f"; accounts for {submitted['value']} are registered as submitted but their figures are not yet available"
         if res is not None:
             assessment.append(f"annual {'loss' if res < 0 else 'profit'} {_nok(abs(res))} in {period}")
             if res < 0:

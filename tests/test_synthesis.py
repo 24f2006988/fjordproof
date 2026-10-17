@@ -130,3 +130,12 @@ class ConclusionAndUnknownSources(unittest.TestCase):
         trend = " ".join(x["text"] for x in s["statements"] if x["topic"] == "trend")
         self.assertIn("Change 2024 to 2025: from -NOK 100 thousand to NOK 1.5 million.", trend)
         self.assertNotIn("revenue_growth", {x["signal"] for x in s["signals"]})
+
+    def test_conclusion_never_calls_figures_newest_filed_when_a_newer_filing_is_registered(self):
+        env = envelope()
+        env["claims"].append({"field": "latest_accounts_year", "value": "2026", "availability": "available", "confidence": 0.99,
+                              "evidence_ids": ["ev-registry_live"], "source_field": "sisteInnsendteAarsregnskap"})
+        s = build_synthesis(self.with_evidence(env))
+        self.assertNotIn("newest filed", s["conclusion"])
+        self.assertIn("The newest figures in the accounts register", s["conclusion"])
+        self.assertIn("accounts for 2026 are registered as submitted but their figures are not yet available", s["conclusion"])
