@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from .official import ACCOUNT_SCOPE, single_scope_accounts
@@ -242,7 +243,18 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     web_rec = records.get("website", {})
     web_val = web_rec.get("value") or {}
     # A fetched site whose identity is not proven for this exact legal entity is never published (wrong-company risk).
-    web_ambiguous = web_rec.get("status") == "available" and (web_val.get("identity_assessment") or {}).get("publishable") is not True
+    web_assess = web_val.get("identity_assessment") or {}
+    web_ambiguous = web_rec.get("status") == "available" and web_assess.get("publishable") is not True
+    # An entity registered "c/o" another party shares that party's address, so an address match proves the host
+    # (e.g. TEAMTEC WASTE TO ENERGY AS c/o TeamTec AS -> teamtec.no is TeamTec AS's site). Only an exact
+    # organisation number can prove such a site.
+    live_val = records.get("registry_live", {}).get("value") or {}
+    reg_addr = " ".join(str(x) for a in (live_val.get("business_address"), live_val.get("postal_address")) if isinstance(a, dict)
+                        for x in (a.get("adresse") or [])) + " " + str(raw_rec.get("forretningsadresse.adresse") or "")
+    care_of = bool(re.search(r"\b(c/o|v/)", reg_addr, re.IGNORECASE))
+    exact_proof = any("exact organisation number" in str(r) for r in web_assess.get("reasons") or [])
+    if web_rec.get("status") == "available" and not web_ambiguous and care_of and not exact_proof:
+        web_ambiguous = True
     web_ok = web_rec.get("status") == "available" and not web_ambiguous
     web_conf = 0.9 if web_ok else 0.0
     if web_ok and web_rec.get("source_type") == "registry_linked_company_website":
@@ -262,7 +274,8 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
 
     # Granular external footprint signals
     fp_rec = records.get("external_footprint", {})
-    fp_ok = fp_rec.get("status") == "available"
+    # Facts read from a site are only as good as the site's identity: none are published from an unproven site.
+    fp_ok = fp_rec.get("status") == "available" and web_ok
     fp_val = fp_rec.get("value") or {}
     item_sources = fp_val.get("item_sources") or {}
 

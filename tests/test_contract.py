@@ -95,6 +95,32 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertEqual(claims["careers_urls"]["value"], ["https://eksempel.no/karriere"])
         self.assertEqual(claims["social_profiles"]["value"], [{"platform": "linkedin", "url": "https://linkedin.com/company/eksempel"}])
 
+    def _care_of_env(self, reasons):
+        profile = {
+            "organisation_number": "816559472", "name": "TEAMTEC WASTE TO ENERGY AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
+            "evidence": {
+                "registry_live": evidence("registry_live", "available", "official_registry_live", "https://data.brreg.no/enhetsregisteret/api/enheter/816559472",
+                                          value={"business_address": {"adresse": ["c/o TeamTec AS", "Nyvei 41"], "postnummer": "4900", "poststed": "TVEDESTRAND"}}),
+                "website": evidence("website", "available", "discovered_company_website", "https://teamtec.no/",
+                                    value={"title": "TeamTec", "identity_assessment": {"publishable": True, "score": 0.9, "reasons": reasons}}),
+                "external_footprint": evidence("external_footprint", "available", "company_owned_site", "https://teamtec.no/",
+                                               value={"social_links": [{"platform": "linkedin", "url": "https://linkedin.com/company/teamtec"}], "contact": {"email": "post@teamtec.no"}}),
+            },
+            "run_metrics": {"requests": 3, "latencies_ms": [10], "plus_requests": 1},
+        }
+        env = terminal_envelope(profile, run_id="t", modules=["registry_live", "website", "external_footprint"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z")
+        return {c["field"]: c for c in to_contract(env)["claims"]}
+
+    def test_care_of_entity_site_needs_exact_org_number_and_its_facts_follow_the_site(self):
+        claims = self._care_of_env(["registered street address and postcode printed on https://teamtec.no/"])
+        self.assertEqual(claims["official_website"]["availability"], "ambiguous")
+        self.assertIsNone(claims["official_website"]["value"])
+        self.assertNotEqual(claims["social_profiles"]["availability"], "available")
+        self.assertNotEqual(claims["site_email"]["availability"], "available")
+        exact = self._care_of_env(["exact organisation number appears in homepage identity evidence"])
+        self.assertEqual(exact["official_website"]["availability"], "available")
+        self.assertEqual(exact["social_profiles"]["availability"], "available")
+
     def test_financial_claims_use_latest_period_not_first_record(self):
         profile = {
             "organisation_number": "123456789", "name": "Eksempel AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
