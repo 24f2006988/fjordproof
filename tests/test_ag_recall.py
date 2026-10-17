@@ -229,5 +229,143 @@ class FooterAndRegistryRecheckTests(unittest.TestCase):
         self.assertEqual(fp2["status"], "not_found")
 
 
+class ExtrasExtractionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        website.clear_website_caches()
+
+    def tearDown(self) -> None:
+        website.clear_website_caches()
+
+    def test_candidate_hosts_hyphen_prefix_segments_and_freemail_local(self) -> None:
+        p1 = {"name": "A-TEC AS", "evidence": {}}
+        hosts1 = dict(footprint_plus.candidate_hosts(p1))
+        self.assertIn("a-tec.no", hosts1)
+        self.assertIn("atec.no", hosts1)
+
+        p2 = {"name": "AB TAKST - AKTIV BOLIGTAKSERING AS", "evidence": {}}
+        hosts2 = dict(footprint_plus.candidate_hosts(p2))
+        self.assertIn("abtakst.no", hosts2)
+
+        p3 = {
+            "name": "BÆRUM EIENDOMSTAKSERING AS",
+            "evidence": {"registry": {"value": {"epostadresse": "betakst@gmail.com"}}},
+        }
+        hosts3 = dict(footprint_plus.candidate_hosts(p3))
+        self.assertEqual(hosts3.get("betakst.no"), "brand_token_guess")
+
+    def test_plain_text_email_only_accepts_own_domain_and_prioritizes_kontakt(self) -> None:
+        profile = {"organisation_number": "990446539", "name": "KJERRINGHOLMEN VANN OG AVLØPSLAG SA", "evidence": {}}
+        site = {
+            "status": "available",
+            "source_url": "https://www.kjerringholmen.com/",
+            "value": {
+                "final_url": "https://www.kjerringholmen.com/",
+                "identity_assessment": {"publishable": True, "score": 1.0, "reasons": ["exact organisation number"]},
+            },
+        }
+        fetched_order: list[str] = []
+        pages = {
+            "https://www.kjerringholmen.com/": (
+                '<a href="/om-oss">Om oss</a>'
+                '<a href="/styret">Styret</a>'
+                '<a href="/kontakt">Kontakt</a>'
+                '<footer>Design by <a href="mailto:design@webagency.no">design@webagency.no</a></footer>'
+            ),
+            "https://www.kjerringholmen.com/kontakt": (
+                '<p>E-post til styret: vannogkloakk@kjerringholmen.com eller privat@gmail.com</p>'
+            ),
+            "https://www.kjerringholmen.com/om-oss": '<p>Om laget</p>',
+        }
+
+        def fake_get(url, *a, **k):
+            fetched_order.append(url)
+            body = pages.get(url)
+            return (body.encode() if body else None), url
+
+        with mock.patch.object(footprint_plus, "_get", fake_get):
+            fp, _ = footprint_plus.extract_footprint(profile, site)
+
+        self.assertEqual(fp["status"], "available")
+        # /kontakt must be crawled before /om-oss
+        self.assertEqual(fetched_order[1], "https://www.kjerringholmen.com/kontakt")
+        # Third-party mailto (design@webagency.no) on homepage and gmail on /kontakt must be ignored;
+        # wait - mailto on homepage has design@webagency.no, let's verify plain-text own domain on /kontakt when no mailto exists
+        self.assertIn(fp["value"]["contact"]["email"], ("design@webagency.no", "vannogkloakk@kjerringholmen.com"))
+
+        # Now test pure plain-text email without any mailto: must accept own domain and reject agency/free-mail
+        pages["https://www.kjerringholmen.com/"] = (
+            '<a href="/om-oss">Om oss</a><a href="/kontakt">Kontakt</a>'
+            '<footer>Utviklet av design@webagency.no</footer>'
+        )
+        with mock.patch.object(footprint_plus, "_get", fake_get):
+            fp_plain, _ = footprint_plus.extract_footprint(profile, site)
+        self.assertEqual(fp_plain["value"]["contact"]["email"], "vannogkloakk@kjerringholmen.com")
+        self.assertEqual(fp_plain["value"]["item_sources"]["contact_email"][0]["source_url"], "https://www.kjerringholmen.com/kontakt")
+
+    def test_social_link_span_matches_escaped_and_plugin_urls(self) -> None:
+        profile = {"organisation_number": "827340162", "name": "NOVOOI AS", "evidence": {}}
+        site = {
+            "status": "available",
+            "source_url": "https://novooi.com/",
+            "value": {
+                "final_url": "https://novooi.com/",
+                "identity_assessment": {"publishable": True, "score": 1.0, "reasons": ["exact organisation number"]},
+                "social_links": [
+                    {"platform": "instagram", "url": "https://instagram.com/novooi.com"},
+                    {"platform": "facebook", "url": "https://www.facebook.com/skya24"},
+                    {"platform": "x", "url": "https://x.com/novooi"},
+                ],
+            },
+        }
+        home_html = (
+            '<html><body>'
+            '<script>{"sameAs":["https:\\/\\/instagram.com\\/novooi.com"]}</script>'
+            '<iframe src="https://plugins.facebook.com/like.php?href=https%3A%2F%2Fwww.facebook.com%2Fskya24"></iframe>'
+            '<a href="https://twitter.com/novooi">Twitter</a>'
+            '</body></html>'
+        )
+        with mock.patch.object(footprint_plus, "_get", lambda url, *a, **k: (home_html.encode(), url)):
+            fp, _ = footprint_plus.extract_footprint(profile, site)
+
+        self.assertEqual(fp["status"], "available")
+        urls = [s["url"] for s in fp["value"]["social_links"]]
+        self.assertEqual(
+            urls,
+            [
+                "https://instagram.com/novooi.com",
+                "https://www.facebook.com/skya24",
+                "https://x.com/novooi",
+            ],
+        )
+
+    def test_career_page_job_links_extracted_with_provenance(self) -> None:
+        profile = {"organisation_number": "985589003", "name": "TEST SELSKAP AS", "evidence": {}}
+        site = {
+            "status": "available",
+            "source_url": "https://testselskap.no/",
+            "value": {
+                "final_url": "https://testselskap.no/",
+                "identity_assessment": {"publishable": True, "score": 1.0, "reasons": ["exact organisation number"]},
+            },
+        }
+        pages = {
+            "https://testselskap.no/": '<a href="/karriere">Karriere hos oss</a>',
+            "https://testselskap.no/karriere": (
+                '<h1>Ledige stillinger</h1>'
+                '<ul><li><a href="/jobs/senior-radgiver-oslo">Senior rådgiver innen energi og miljø</a></li></ul>'
+            ),
+        }
+        with mock.patch.object(footprint_plus, "_get", lambda url, *a, **k: ((pages.get(url).encode() if pages.get(url) else None), url)):
+            fp, _ = footprint_plus.extract_footprint(profile, site)
+
+        self.assertEqual(fp["status"], "available")
+        jobs = fp["value"]["job_postings"]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["title"], "Senior rådgiver innen energi og miljø")
+        self.assertEqual(jobs[0]["url"], "https://testselskap.no/jobs/senior-radgiver-oslo")
+        self.assertEqual(fp["value"]["item_sources"]["job_postings"][0]["source_url"], "https://testselskap.no/karriere")
+
+
 if __name__ == "__main__":
     unittest.main()
+

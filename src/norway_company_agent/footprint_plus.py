@@ -50,6 +50,9 @@ GENERIC_SLUG_TOKENS = {
     "forbund", "bedrift", "selskap", "forretning", "entreprenor", "maler", "rorlegger",
     "elektriker", "auto", "bil", "verksted", "butikk", "kafe", "restaurant", "hotell", "studio",
     "finans", "kapital", "management", "radgivning", "raadgivning", "utvikling", "kjop", "salg",
+    "baerum", "oslo", "bergen", "stavanger", "trondheim", "drammen", "vest", "nord", "sor", "ost",
+    "takst", "eiendomstaksering", "boligtaksering", "kraft", "kraftverk", "industrier", "gard", "gaard",
+    "barnehage", "interior", "farge", "marked", "media", "digital",
 }
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 
@@ -109,7 +112,9 @@ def _slug_variants(text: str) -> set[str]:
 def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     """(host, method) pairs, best first. Method decides how strict the identity gate must be."""
     out: list[tuple[str, str]] = []
-    
+    tokens = _tokens(profile.get("name"))
+    raw_name = str(profile.get("name") or "").strip().casefold()
+
     # 1. Registered email domains (from registry bulk, live, and subunits)
     emails: list[str] = []
     raw = (profile.get("evidence", {}).get("registry", {}).get("value") or {})
@@ -122,9 +127,11 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
         if loc.get("email"):
             emails.append(str(loc["email"]))
 
+    freemail_locals: list[str] = []
     for em in emails:
         if "@" in em:
-            d = em.rsplit("@", 1)[1].strip().lower()
+            local_part, d = em.rsplit("@", 1)
+            d = d.strip().lower()
             if d and d not in FREE_MAIL and "." in d:
                 out.append((d, "registry_email_domain"))
                 # If subdomain (e.g. mail.firma.no), also add root domain
@@ -133,6 +140,16 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
                     root_d = ".".join(parts[-2:])
                     if root_d not in FREE_MAIL:
                         out.append((root_d, "registry_email_domain"))
+            elif d in FREE_MAIL:
+                cleaned_local = re.sub(r"^(?:post|info|kontakt|kontor|firma|mail)[._\-]+", "", local_part.strip().lower())
+                cleaned_local = re.sub(r"[._\-]+(?:no|as|asa)$", "", cleaned_local)
+                slug_local = re.sub(r"[^a-z0-9-]", "", cleaned_local).strip("-")
+                if 4 <= len(slug_local) <= 30 and not slug_local.isdigit():
+                    joined_toks = "".join(tokens)
+                    if any(t[:3] in slug_local for t in tokens if len(t) >= 3) or any(
+                        slug_local[i : i + 4] in joined_toks for i in range(len(slug_local) - 3)
+                    ):
+                        freemail_locals.append(slug_local)
 
     # 2. Brave Search candidate (if key present in env)
     brave_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
@@ -140,8 +157,30 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
         for b_host in _brave_search_candidates(profile, brave_key):
             out.append((b_host, "brave_search_candidate"))
 
+    # 3. Free-mail local-part brand candidates (subject to full _accept_proof gate)
+    for fl in freemail_locals:
+        out.append((f"{fl}.no", "brand_token_guess"))
+        out.append((f"{fl}.com", "brand_token_guess"))
+
+    # 3b. Hyphenated single-letter prefix slugs (e.g. A-TEC AS -> a-tec.no, atec.no)
+    m_prefix = re.match(r"^([a-zæøå])\s*-\s*([a-zæøå0-9]{2,20})\b", raw_name)
+    if m_prefix:
+        p_letter, p_word = m_prefix.group(1), m_prefix.group(2)
+        for v in sorted(_slug_variants(f"{p_letter}-{p_word}") | _slug_variants(f"{p_letter}{p_word}"), key=len):
+            out.append((f"{v}.no", "name_slug_guess"))
+            out.append((f"{v}.com", "name_slug_guess"))
+
+    # 3c. Dash or slash separated brand segments (e.g. AB TAKST - AKTIV BOLIGTAKSERING AS)
+    if re.search(r"\s+[-–/]\s+", raw_name):
+        for seg in re.split(r"\s+[-–/]\s+", raw_name):
+            seg_clean = re.sub(r"\s+\b(?:asa|as|ans|da|ks|sa|ba|nuf|enk|ik|sf|kf|fkf|oy|ab|ltd|gmbh|inc|holding|konsern)\b\s*$", "", seg.strip())
+            seg_tokens = [t for t in re.findall(r"[a-z0-9æøå]+", seg_clean) if len(t) > 1 and not t.isdigit()]
+            if seg_tokens:
+                for v in sorted(_slug_variants("".join(seg_tokens)) | (_slug_variants("-".join(seg_tokens)) if len(seg_tokens) > 1 else set()), key=len):
+                    out.append((f"{v}.no", "brand_token_guess"))
+                    out.append((f"{v}.com", "brand_token_guess"))
+
     # 3. Name slug candidates with Norwegian vowel digraphs and generic token stripping
-    tokens = _tokens(profile.get("name"))
     if tokens:
         # Full name slug candidates
         joined = "".join(tokens)
@@ -512,12 +551,52 @@ def _norm_phone(value: str) -> str | None:
     return "+47" + digits if len(digits) == 8 and digits[0] in "23456789" else None
 
 
+EMAIL_TEXT_RE = re.compile(r"\b([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,15})\b")
+
+
 def _phone_from_text(text: str) -> tuple[str, str] | None:
     """A Norwegian number printed next to a phone label on a verified company page: (number, literal snippet)."""
     for m in PHONE_LABEL_RE.finditer(text):
         phone = _norm_phone(m.group(1))
         if phone:
             return phone, m.group(0).strip()[:160]
+    return None
+
+
+def _email_from_text(text: str, site_domain: str) -> tuple[str, str] | None:
+    """Plain-text email printed on a verified company page, strictly on the site's own registered domain."""
+    if not site_domain:
+        return None
+    site_dom = site_domain.lower().removeprefix("www.")
+    for m in EMAIL_TEXT_RE.finditer(text):
+        addr = m.group(1).strip(".,;:()[]<>\"'").lower()
+        if "@" not in addr:
+            continue
+        email_host = addr.rsplit("@", 1)[1]
+        if email_host != site_dom and not email_host.endswith("." + site_dom):
+            continue
+        start = max(0, m.start() - 30)
+        end = min(len(text), m.end() + 30)
+        return addr[:120], text[start:end].strip()[:160]
+    return None
+
+
+def _find_social_span(key: str, text: str) -> str | None:
+    """Find the literal span in HTML/JSON text for a normalized social URL key (handling escaped slashes, plugin URLs, and twitter.com)."""
+    if not key or not text:
+        return None
+    keys = [key]
+    if key.startswith("x.com/"):
+        keys.append("twitter.com/" + key[6:])
+    patterns: list[str] = []
+    for k in keys:
+        patterns.append(re.escape(k))
+        patterns.append(re.escape(k).replace("/", r"\\?/"))
+        patterns.append(re.escape(urllib.parse.quote(k, safe="")))
+    for pat in patterns:
+        hit = re.search(r"[^\"'\s<>]*" + pat + r"[^\"'\s<>]*", text, re.I)
+        if hit:
+            return hit.group(0)
     return None
 
 
@@ -683,7 +762,7 @@ def _article_meta(raw: bytes) -> tuple[str, str, str, str] | None:
         if meta and _iso_date(str(meta.get("content") or "")):
             date, kind, span = _iso_date(str(meta.get("content"))), "meta_published_time", str(meta)
     if not date:
-        t = soup.select_one("article time[datetime]")
+        t = soup.select_one('article time[datetime], time[itemprop="datePublished"][datetime], time.published[datetime], time.entry-date[datetime], main time[datetime]')
         if t and _iso_date(str(t.get("datetime") or "")):
             date, kind, span = _iso_date(str(t.get("datetime"))), "article_time_element", str(t)
     if not date:
@@ -780,11 +859,11 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         item_sources.setdefault(field, []).append({"item": item, "source_url": src_url, "sha256": sha, "span": " ".join(span.split())[:240]})
 
     home_sha = _sha(raw) if raw else ""
+    base_domain = _registered_domain(final) if final else ""
     if raw and final:
         metrics["bytes"] += len(raw)
         soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml")
         host = urllib.parse.urlparse(final).netloc.lower()
-        base_domain = _registered_domain(final)
         for a in soup.select("a[href]"):
             url = urllib.parse.urljoin(final, str(a.get("href") or ""))
             p = urllib.parse.urlparse(url)
@@ -848,11 +927,21 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             except Exception:
                 pass
 
-    if raw and final and "phone" not in contact:
-        found_phone = _phone_from_text(BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml").get_text(" ", strip=True))
-        if found_phone:
-            contact["phone"] = found_phone[0]
-            note("contact_phone", found_phone[0], final, home_sha, found_phone[1])
+    if raw and final:
+        home_plain_text = BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml").get_text(" ", strip=True)
+        if "phone" not in contact:
+            found_phone = _phone_from_text(home_plain_text)
+            if found_phone:
+                contact["phone"] = found_phone[0]
+                note("contact_phone", found_phone[0], final, home_sha, found_phone[1])
+        if "email" not in contact:
+            found_email = _email_from_text(home_plain_text, base_domain)
+            if found_email:
+                contact["email"] = found_email[0]
+                note("contact_email", found_email[0], final, home_sha, found_email[1])
+
+    # Prioritize dedicated /kontakt or /contact pages ahead of /om-oss
+    contact_links.sort(key=lambda u: 0 if any(k in u.casefold() for k in ("kontakt", "contact")) else 1)
 
     craw, cfinal, csha = None, None, None
     if contact_links and (not contact.get("email") or not contact.get("phone") or not value.get("social_links")):
@@ -874,18 +963,23 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
                     if phone:
                         contact["phone"] = phone
                         note("contact_phone", phone, csrc, csha, str(ca))
+            c_plain_text = csoup.get_text(" ", strip=True)
             if "phone" not in contact:
-                found_phone = _phone_from_text(csoup.get_text(" ", strip=True))
+                found_phone = _phone_from_text(c_plain_text)
                 if found_phone:
                     contact["phone"] = found_phone[0]
                     note("contact_phone", found_phone[0], csrc, csha, found_phone[1])
+            if "email" not in contact:
+                found_email = _email_from_text(c_plain_text, base_domain)
+                if found_email:
+                    contact["email"] = found_email[0]
+                    note("contact_email", found_email[0], csrc, csha, found_email[1])
 
     # If career entry points discovered, fetch the primary career page to find structured job postings
     if careers and not job_postings:
         career_target = careers[0]
         ct_p = urllib.parse.urlparse(career_target)
         ct_host = ct_p.netloc.lower()
-        base_domain = _registered_domain(final) if final else ""
         if (base_domain and (ct_host == base_domain or ct_host.endswith("." + base_domain))) or any(d in ct_host for d in ("teamtailor.com", "recman.no", "jobbnorge.no", "webcruiter.no")):
             _NET.last_requests = 1
             ct_raw, ct_final = _get(career_target, timeout=5.0)
@@ -913,6 +1007,23 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
                                     note("job_postings", title_str, ct_final or career_target, ct_sha, jtext[:240])
                     except Exception:
                         pass
+                if not job_postings:
+                    for ja in ct_soup.select("a[href]"):
+                        jhref = urllib.parse.urljoin(ct_final or career_target, str(ja.get("href") or "")).split("#", 1)[0].split("?", 1)[0]
+                        jp = urllib.parse.urlparse(jhref)
+                        jsegs = _segments(jp.path)
+                        if len(jsegs) >= 2 and jsegs[0] in {"jobs", "stillinger", "ledige-stillinger", "vacancies"} and not jsegs[1].isdigit():
+                            jtitle = " ".join(ja.get_text(" ", strip=True).split())[:200]
+                            if 4 <= len(jtitle) <= 140 and not any(jp_item.get("title") == jtitle for jp_item in job_postings):
+                                job_postings.append({
+                                    "title": jtitle,
+                                    "date_posted": "",
+                                    "employment_type": "",
+                                    "url": jhref,
+                                })
+                                note("job_postings", jtitle, ct_final or career_target, ct_sha, str(ja)[:240])
+                                if len(job_postings) >= 6:
+                                    break
 
     activity = []
     for feed in feeds[:2]:
@@ -970,20 +1081,20 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     for link, cand_src, cand_sha, cand_text in all_social_candidates:
         url = str(link.get("url") if isinstance(link, dict) else link)
         key = re.sub(r"^https?://(?:www\.)?", "", url, flags=re.I)
-        hit = re.search(r"[^\"'\s<>]*" + re.escape(key) + r"[^\"'\s<>]*", cand_text, re.I) if (cand_src and key) else None
-        if not hit and cand_src and key:
+        span_hit = _find_social_span(key, cand_text) if (cand_src and key) else None
+        if not span_hit and cand_src and key:
             other_text = cpage_text if cand_text is page_text else page_text
             other_src = cfinal if cand_text is page_text else final
             other_sha = csha if cand_text is page_text else home_sha
             if other_text and other_src:
-                hit = re.search(r"[^\"'\s<>]*" + re.escape(key) + r"[^\"'\s<>]*", other_text, re.I)
-                if hit:
+                span_hit = _find_social_span(key, other_text)
+                if span_hit:
                     cand_src, cand_sha = other_src, other_sha
-        if hit and not any(s.get("url") == link.get("url") for s in social):
+        if span_hit and not any(s.get("url") == link.get("url") for s in social):
             social.append(link)
-            note("social_links", url, cand_src, cand_sha, hit.group(0))
+            note("social_links", url, cand_src, cand_sha, span_hit)
 
-    found = bool(careers or activity or contact or news_pages or job_postings)
+    found = bool(careers or activity or contact or news_pages or job_postings or social)
     return evidence(
         "external_footprint", "available" if found else "not_found", "company_owned_site", final or source,
         value={"careers_urls": careers[:4], "news_pages": news_pages[:3], "dated_activity": activity[:8],
