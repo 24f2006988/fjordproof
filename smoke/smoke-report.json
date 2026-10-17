@@ -1,7 +1,7 @@
 {
-  "run_id": "smoke-029",
-  "started_at": "2026-10-17T10:40:34.541950Z",
-  "completed_at": "2026-10-17T10:47:10.609746Z",
+  "run_id": "smoke-030",
+  "started_at": "2026-10-17T11:18:49.979544Z",
+  "completed_at": "2026-10-17T11:26:45.742682Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -11,6 +11,7 @@
     "accounting_obligation",
     "registry_live",
     "financials",
+    "financial_history",
     "roles",
     "group",
     "locations",
@@ -26,10 +27,10 @@
     "bulk_note": "bulk snapshot not supplied"
   },
   "operations": {
-    "requests": 1260,
-    "bytes": 2447216,
-    "p50_ms": 1218,
-    "p95_ms": 2702,
+    "requests": 1371,
+    "bytes": 2454911,
+    "p50_ms": 1233,
+    "p95_ms": 2077,
     "third_party_cost_usd": 0,
     "budget_exhausted": false
   },
@@ -44,5 +45,6 @@
     },
     "invalid_states": []
   },
-  "discovery_retries": 31
+  "discovery_retries": 23,
+  "footprint_retries": 0
 }
