@@ -112,6 +112,33 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertEqual(claims["latest_accounts_year"]["value"], "2025")
         self.assertEqual(claims["revenue"]["period"]["tilDato"], "2025-12-31")
 
+    def test_financial_claims_state_scope_and_never_mix_group_accounts(self):
+        recs = [
+            {"record_id": 7, "account_type": "KONSERN", "currency": "NOK", "revenue": 900.0, "period": {"fraDato": "2024-01-01", "tilDato": "2024-12-31"}},
+            {"record_id": 8, "account_type": "SELSKAP", "currency": "NOK", "revenue": 100.0, "period": {"fraDato": "2024-01-01", "tilDato": "2024-12-31"}},
+            {"record_id": 9, "account_type": "KONSERN", "currency": "NOK", "revenue": 950.0, "period": {"fraDato": "2025-01-01", "tilDato": "2025-12-31"}},
+        ]
+        profile = {
+            "organisation_number": "123456789", "name": "Eksempel AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
+            "evidence": {"financials": evidence("financials", "available", "official_annual_accounts", "https://data.brreg.no/regnskapsregisteret/regnskap/123456789",
+                value={"records": recs})},
+            "run_metrics": {"requests": 1, "latencies_ms": [1], "plus_requests": 0},
+        }
+        env = terminal_envelope(profile, run_id="t", modules=["financials"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z")
+        out = to_contract(env)
+        claims = {c["field"]: c for c in out["claims"]}
+        rev = claims["revenue"]
+        self.assertEqual((rev["value"], rev["scope"], rev["currency"], rev["source_record_id"]), (100.0, "SELSKAP", "NOK", 8))
+        self.assertEqual(rev["period"]["tilDato"], "2024-12-31")
+        self.assertEqual(claims["latest_accounts_year"]["period"]["tilDato"], "2024-12-31")
+        ev = {e["id"]: e for e in out["evidence"]}
+        self.assertEqual(rev["evidence_ids"], ["ev-financials-latest"])
+        self.assertIn("record 8", ev["ev-financials-latest"]["claim_span"])
+        self.assertIn("SELSKAP", ev["ev-financials-latest"]["claim_span"])
+        fin = next(s["text"] for s in out["synthesis"]["statements"] if s["topic"] == "finances")
+        self.assertIn("company accounts (SELSKAP)", fin)
+        self.assertNotIn("950", fin)
+
 
 if __name__ == "__main__":
     unittest.main()

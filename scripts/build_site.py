@@ -174,7 +174,7 @@ function link(u, text){ const s = safeUrl(u); return s ? el("a", {href:s, target
 const claim = (d, f) => d.claims.find(c => c.f === f);
 const val = (d, f) => { const c = claim(d, f); return c && c.s === "available" ? c.v : null; };
 const money = n => (n == null ? "–" : nok.format(n));
-function accounts(d){ const v = val(d, "annual_accounts"); return v && v.records ? [...v.records].sort((a,b) => (a.period?.tilDato||"").localeCompare(b.period?.tilDato||"")) : []; }
+function accounts(d){ const v = val(d, "annual_accounts"); if (!v || !v.records) return []; const scope = v.records.some(r => r.account_type === "SELSKAP") ? "SELSKAP" : (v.records.some(r => r.account_type === "KONSERN") ? "KONSERN" : null); return v.records.filter(r => !scope || r.account_type === scope).sort((a,b) => (a.period?.tilDato||"").localeCompare(b.period?.tilDato||"")); }
 function latestAcc(d){ const a = accounts(d); return a.length ? a[a.length-1] : null; }
 function activeRoles(d){ const v = val(d, "roles"); return v && v.roles ? v.roles.filter(r => !r.inactive) : []; }
 function activity(d){ const v = val(d, "external_footprint"); return v && v.dated_activity ? v.dated_activity : []; }
@@ -247,7 +247,7 @@ function summary(d){
   add(d.name, legal ? " is registered as " + legal : " is registered", mun ? " in " + mun : "", " (organisation number " + d.org + ")", refs(d, idRef), ". ", status(d)[0] === "Active in registry" ? "The registry shows no bankruptcy or liquidation." : status(d)[0] + " according to the registry.", refs(d, claim(d,"insolvency_status")?.e));
   add(ind ? "Registered activity: " + ind.label + " (industry code " + ind.code + ")." : "No industry code is registered.", refs(d, claim(d,"industry")?.e));
   const a = accounts(d), l = a[a.length-1];
-  if (l) add("Latest filed accounts (" + (l.period?.fraDato||"?") + " to " + (l.period?.tilDato||"?") + "): revenue " + money(l.revenue) + " " + l.currency + ", operating result " + money(l.operating_result) + ", annual result " + money(l.annual_result) + ", equity " + money(l.equity) + ".", refs(d, claim(d,"annual_accounts")?.e), a.length > 1 ? " " + a.length + " years of accounts are listed below." : "");
+  if (l) add("Newest filed " + (l.account_type === "KONSERN" ? "group accounts (KONSERN)" : l.account_type === "SELSKAP" ? "company accounts (SELSKAP)" : "accounts") + " (" + (l.period?.fraDato||"?") + " to " + (l.period?.tilDato||"?") + "): revenue " + money(l.revenue) + " " + l.currency + ", operating result " + money(l.operating_result) + ", annual result " + money(l.annual_result) + ", equity " + money(l.equity) + ".", refs(d, claim(d,"annual_accounts")?.e), a.length > 1 ? " " + a.length + " years of accounts are listed below." : "");
   else add("No annual accounts were found in the public accounts register.", refs(d, claim(d,"annual_accounts")?.e));
   const emp = val(d,"employees");
   add(emp != null ? "The registry reports " + emp + " employees." : "The registry reports no employee count, so none is stated.", refs(d, claim(d,"employees")?.e));

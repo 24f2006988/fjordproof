@@ -93,6 +93,20 @@ def normalize_financials(body: Any) -> dict[str, Any]:
     return {"records": normalized}
 
 
+ACCOUNT_SCOPE = {"SELSKAP": "company accounts (SELSKAP)", "KONSERN": "group accounts (KONSERN)"}
+
+
+def single_scope_accounts(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filings of one scope only, oldest period first: company accounts (SELSKAP) when filed, else the scope present.
+
+    Brreg returns company and group accounts for the same period side by side; mixing them makes the
+    reported period/scope ambiguous, so claims, trends and summaries never combine the two."""
+    types = {r.get("account_type") for r in records}
+    scope = "SELSKAP" if "SELSKAP" in types else next((t for t in ("KONSERN",) if t in types), None)
+    chosen = [r for r in records if r.get("account_type") == scope] if scope else list(records)
+    return sorted(chosen, key=lambda r: str((r.get("period") or {}).get("tilDato") or ""))
+
+
 def normalize_financial_history(body: Any, org: str) -> dict[str, Any]:
     years = sorted({str(year) for year in body if str(year).isdigit()}) if isinstance(body, list) else []
     return {

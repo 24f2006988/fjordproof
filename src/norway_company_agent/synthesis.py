@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .official import ACCOUNT_SCOPE, single_scope_accounts
+
 UNKNOWN_WHY = {
     "not_available": "checked, but the source has no value for this company",
     "ambiguous": "a candidate was found but could not be proven to belong to this exact company, so it is not published",
@@ -118,11 +120,14 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
 
     # Finances: latest filing plus change against the previous filing when both are present.
     acc = (val("annual_accounts") or {}).get("records") or []
-    acc = sorted(acc, key=lambda r: str((r.get("period") or {}).get("tilDato") or ""))
+    acc = single_scope_accounts(acc)
     if acc:
         last = acc[-1]
-        period = (last.get("period") or {}).get("tilDato", "")[:4] or "latest"
-        say("finances", f"Accounts for {period}: revenue {_nok(last.get('revenue'))}, operating result "
+        lp = last.get("period") or {}
+        period = (lp.get("tilDato") or "")[:4] or "the newest retained period"
+        scope = ACCOUNT_SCOPE.get(last.get("account_type"), "accounts")
+        span = f" ({lp['fraDato']} to {lp['tilDato']}, {last.get('currency') or 'currency not stated'})" if lp.get("fraDato") and lp.get("tilDato") else ""
+        say("finances", f"Newest filed {scope}, {period}{span}: revenue {_nok(last.get('revenue'))}, operating result "
             f"{_nok(last.get('operating_result'))}, annual result {_nok(last.get('annual_result'))}, "
             f"equity {_nok(last.get('equity'))}.", "annual_accounts", "revenue", "annual_result", "total_equity")
         if last.get("annual_result") is not None and last["annual_result"] < 0:

@@ -5,6 +5,7 @@ import hashlib
 import json
 from typing import Any
 
+from .official import ACCOUNT_SCOPE, single_scope_accounts
 from .synthesis import build_synthesis
 
 AVAILABILITY = {
@@ -127,19 +128,35 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     fin_rec = records.get("financials", {})
     fin_ok = fin_rec.get("status") == "available"
     fin_records = (fin_rec.get("value") or {}).get("records") or []
-    # Records are not guaranteed newest-first: pick the filing with the latest period end.
-    latest_acc = max(fin_records, key=lambda r: str((r.get("period") or {}).get("tilDato") or ""), default={})
+    # Records are not guaranteed newest-first, and company/group accounts share periods: take the newest
+    # filing of a single scope and state period, scope, currency and record id on every claim.
+    scoped = single_scope_accounts(fin_records)
+    latest_acc = scoped[-1] if scoped else {}
     acc_period = latest_acc.get("period") or None
+    fin_ev = []
+    if latest_acc and any(e["id"] == "ev-financials" for e in evidence):
+        base = next(e for e in evidence if e["id"] == "ev-financials")
+        p = acc_period or {}
+        fin_ev = ["ev-financials-latest"]
+        evidence.append({**base, "id": "ev-financials-latest", "claim_span": (
+            f"Brreg annual accounts record {latest_acc.get('record_id')} for {org}: "
+            f"{ACCOUNT_SCOPE.get(latest_acc.get('account_type'), latest_acc.get('account_type') or 'scope not stated')}, "
+            f"period {p.get('fraDato')} to {p.get('tilDato')}, currency {latest_acc.get('currency') or 'not stated'}")[:240]})
     def fin_scalar(field: str, val: Any) -> None:
         present = fin_ok and val is not None
-        claims.append({
+        claim = {
             "field": field,
-            "period": acc_period if present and field != "latest_accounts_year" else None,
+            "period": acc_period if present else None,
             "value": val if present else None,
             "availability": "available" if present else ("not_available" if fin_rec.get("status") in {"available", "not_found"} else "failed"),
             "confidence": 0.99 if present else 0.0,
-            "evidence_ids": ["ev-financials"] if present and "financials" in records else [],
-        })
+            "evidence_ids": fin_ev if present else [],
+        }
+        if present:
+            claim["scope"] = latest_acc.get("account_type")
+            claim["currency"] = latest_acc.get("currency") if field != "latest_accounts_year" else None
+            claim["source_record_id"] = latest_acc.get("record_id")
+        claims.append(claim)
     fin_scalar("latest_accounts_year", (latest_acc.get("period") or {}).get("tilDato", "")[:4] or profile.get("latest_submitted_accounts"))
     fin_scalar("revenue", latest_acc.get("revenue"))
     fin_scalar("operating_result", latest_acc.get("operating_result"))
