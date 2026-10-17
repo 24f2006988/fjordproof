@@ -20,7 +20,20 @@ from bs4 import BeautifulSoup
 
 from .evidence import evidence, utc_now
 from .identity import _tokens, apply_website_identity_gate, assess_social_identity
-from .website import SAFE_OPENER, USER_AGENT, _registered_domain, _robots_allowed, assert_public_url, fetch_website, normalize_social_url
+from .website import (
+    SAFE_OPENER,
+    USER_AGENT,
+    _cache_page,
+    _get_cached_page,
+    _get_cached_robots_body,
+    _registered_domain,
+    _robots_allowed,
+    _robots_check,
+    _social_links,
+    assert_public_url,
+    fetch_website,
+    normalize_social_url,
+)
 
 FREE_MAIL = {"gmail.com", "hotmail.com", "outlook.com", "live.com", "yahoo.com", "icloud.com", "online.no",
              "msn.com", "me.com", "hotmail.no", "outlook.no", "live.no", "yahoo.no", "getmail.no", "start.no",
@@ -204,7 +217,7 @@ def _accept_proof(proof: str | None, assessment: dict[str, Any], method: str) ->
     return method != "registry_email_domain" and assessment.get("score", 0) >= 0.85
 
 
-def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout: float = 5.0) -> tuple[dict[str, Any] | None, dict[str, int]]:
+def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout: float = 8.0) -> tuple[dict[str, Any] | None, dict[str, int]]:
     """First candidate host with hard proof of the exact entity, else None.
 
     ``metrics["transient"]`` counts resolving candidates whose homepage fetch failed with a network error or
@@ -217,7 +230,7 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
         if not _resolves(host):
             continue
         tested += 1
-        record, m = fetch_website(host, timeout=timeout)
+        record, m = fetch_website(host, timeout=timeout, crawl_secondary=False)
         metrics["requests"] += m["requests"]
         metrics["bytes"] += m["bytes"]
         if record.get("status") == "source_error" and _is_transient(str(record.get("note") or "")):
@@ -231,8 +244,11 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
         ok = bool(assessment.get("publishable")) if method == "registry_email_domain" else assessment.get("score") == 1.0
         if not ok and assessment.get("score", 0) >= 0.3:
             weak = assessment.get("score", 0) < 0.5
-            proof, pm = hard_identity_proof(profile, record, WEAK_CANDIDATE_PROOF_PAGES if weak else MAX_PROOF_PAGES)
+            proof, pm = hard_identity_proof(profile, record, WEAK_CANDIDATE_PROOF_PAGES if weak else MAX_PROOF_PAGES, timeout)
             metrics["requests"] += pm["requests"]
+            if (record.get("value") or {}).get("pages"):
+                gated = apply_website_identity_gate(profile, record)
+                assessment = gated["assessment"] or {}
             ok = _accept_proof(proof, assessment, method)
             if ok:
                 exact = proof.startswith("exact organisation number")
@@ -240,7 +256,14 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
                 assessment["score"] = 1.0 if exact else 0.9
                 assessment["status"] = "exact" if exact else "review"
                 assessment["reasons"] = list(assessment.get("reasons", [])) + [proof]
-                record.setdefault("value", {})["identity_assessment"] = assessment
+                val = record.setdefault("value", {})
+                val["identity_assessment"] = assessment
+                if val.get("social_link_assessments") and not val.get("social_links"):
+                    val["social_links"] = [
+                        {"platform": item["platform"], "url": item["url"]}
+                        for item in val["social_link_assessments"]
+                        if item.get("publishable")
+                    ]
         if not ok:
             if tested >= max_tested_hosts:
                 break
@@ -265,13 +288,16 @@ def _proof_links(root: str, html: str) -> list[str]:
     """Same-host links on the homepage whose address or text suggests a contact / legal / about page."""
     host = urllib.parse.urlparse(root).netloc.lower().removeprefix("www.")
     found: list[str] = []
+    seen_norm: set[str] = set()
     for a in BeautifulSoup(html, "lxml").find_all("a", href=True):
         href = urllib.parse.urljoin(root + "/", a["href"].strip()).split("#")[0]
         parsed = urllib.parse.urlparse(href)
         if parsed.scheme not in {"http", "https"} or parsed.netloc.lower().removeprefix("www.") != host:
             continue
         label = (parsed.path + " " + a.get_text(" ", strip=True)).casefold()
-        if any(term in label for term in PROOF_LINK_TERMS) and href not in found:
+        norm_href = (href.rstrip("/") or href).casefold()
+        if any(term in label for term in PROOF_LINK_TERMS) and norm_href not in seen_norm:
+            seen_norm.add(norm_href)
             found.append(href)
     return found
 
@@ -306,7 +332,12 @@ def _extract_company_proof_targets(profile: dict[str, Any]) -> dict[str, Any]:
     return targets
 
 
-def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any], max_pages: int = MAX_PROOF_PAGES) -> tuple[str | None, dict[str, int]]:
+def hard_identity_proof(
+    profile: dict[str, Any],
+    website: dict[str, Any],
+    max_pages: int = MAX_PROOF_PAGES,
+    timeout: float = 8.0,
+) -> tuple[str | None, dict[str, int]]:
     """Exact org number, or registered street address + postcode. Phone/leader matches are NOT proof (sister companies share them).
 
     Looks at the homepage, then contact/about/legal pages linked from it, then a short list of conventional paths.
@@ -324,21 +355,41 @@ def hard_identity_proof(profile: dict[str, Any], website: dict[str, Any], max_pa
     queue = [base]
     fetched = 0
     first_html = None
+    wval = website.get("value") if isinstance(website.get("value"), dict) else None
     while queue and fetched < max_pages:
         url = queue.pop(0)
-        if url in seen:
+        norm_url = (url.rstrip("/") or url).casefold()
+        if norm_url in seen:
             continue
-        seen.add(url)
-        body, _ = _get(url)
+        seen.add(norm_url)
+        _NET.last_requests = 1
+        body, final_url = _get(url, timeout)
         if fetched:
-            metrics["requests"] += 1
+            metrics["requests"] += getattr(_NET, "last_requests", 1)
         fetched += 1
         if not body:
             if first_html is None and url == base:
                 queue.extend(root + path for path in PROOF_PATHS)
             continue
         html = body.decode("utf-8", errors="replace")
-        text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+        soup = BeautifulSoup(html, "lxml")
+        text = soup.get_text(" ", strip=True)
+        if fetched > 1 and wval is not None and isinstance(wval.get("pages"), list):
+            resolved_url = final_url or url
+            if not any((p.get("url") or "").rstrip("/") == resolved_url.rstrip("/") for p in wval["pages"]):
+                wval["pages"].append({
+                    "url": resolved_url,
+                    "title": soup.title.get_text(" ", strip=True)[:500] if soup.title else "",
+                    "main_text_excerpt": text[:5000],
+                    "content_sha256": hashlib.sha256(body).hexdigest(),
+                })
+            page_socials = _social_links(resolved_url, soup)
+            if page_socials:
+                disc = list(wval.get("discovered_social_links") or wval.get("social_links") or [])
+                for sl in page_socials:
+                    if not any(d.get("url") == sl["url"] for d in disc):
+                        disc.append(sl)
+                wval["discovered_social_links"] = disc
         squeezed = re.sub(r"(?<=\d)[\s.\-_](?=\d)", "", text)
         raw_squeezed = re.sub(r"(?<=\d)[\s.\-_](?=\d)", "", html)
         if org_re and (org_re.search(squeezed) or org_re.search(raw_squeezed)):
@@ -365,19 +416,38 @@ def _transient_count() -> int:
     return getattr(_NET, "count", 0)
 
 
-def _get(url: str, timeout: float = 6.0, max_bytes: int = 800_000) -> tuple[bytes | None, str | None]:
+def _get(url: str, timeout: float = 8.0, max_bytes: int = 800_000) -> tuple[bytes | None, str | None]:
+    if url.endswith("/robots.txt"):
+        cached_robots = _get_cached_robots_body(url)
+        if cached_robots is not None:
+            _NET.last_requests = 0
+            return (cached_robots[:max_bytes] if cached_robots else None), url
+    cached = _get_cached_page(url)
+    if cached is not None:
+        _NET.last_requests = 0
+        return cached[0][:max_bytes], cached[1]
+    r_req = 0
     try:
         assert_public_url(url)
-        if not _robots_allowed(url, timeout):
+        allowed, r_req = _robots_check(url, timeout)
+        if not allowed:
+            _NET.last_requests = r_req
             return None, None
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with SAFE_OPENER.open(req, timeout=timeout) as r:
             final = r.geturl()
             assert_public_url(final)
-            return r.read(max_bytes), final
+            raw = r.read(max_bytes)
+            ctype = (r.headers.get("content-type", "") or "").lower()
+        _NET.last_requests = r_req + 1
+        if raw and ("html" in ctype or "xml" in ctype or "json" in ctype or "text" in ctype or not ctype):
+            _cache_page(url, raw, final)
+        return raw, final
     except urllib.error.HTTPError:
+        _NET.last_requests = r_req + 1
         return None, None
     except Exception as exc:
+        _NET.last_requests = r_req + 1
         if _is_transient(exc) or isinstance(exc, (TimeoutError, ConnectionError)):
             _NET.count = _transient_count() + 1
         return None, None
@@ -476,8 +546,9 @@ def _sitemap_signals(final: str, host: str) -> tuple[list[str], list[str], list[
     The last value maps each returned URL to the sitemap file it was read from (url, sha256, literal <loc> span).
     """
     origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlparse(final))
-    requests = 1
+    _NET.last_requests = 1
     robots, _ = _get(origin + "/robots.txt", timeout=5.0)
+    requests = getattr(_NET, "last_requests", 1)
     starts = [m for m in re.findall(r"(?im)^sitemap:\s*(\S+)", (robots or b"").decode("utf-8", "replace")) if _same_site(m, host)]
     queue = starts[:2] or [origin + "/sitemap.xml"]
     careers: list[str] = []
@@ -487,9 +558,10 @@ def _sitemap_signals(final: str, host: str) -> tuple[list[str], list[str], list[
     fetched = 0
     while queue and fetched < 3:
         sm_url = queue.pop(0)
+        _NET.last_requests = 1
         raw, sm_final = _get(sm_url, timeout=5.0)
         fetched += 1
-        requests += 1
+        requests += getattr(_NET, "last_requests", 1)
         if not raw:
             continue
         kind, rows = _sitemap_entries(raw)
@@ -646,14 +718,16 @@ def _news_articles(sections: list[str], candidates: list[str], host: str, max_ar
     requests = 0
     urls = list(candidates)
     if sections and len(urls) < max_articles:
+        _NET.last_requests = 1
         sraw, sfinal = _get(sections[0], timeout=5.0)
-        requests += 1
+        requests += getattr(_NET, "last_requests", 1)
         if sraw:
             urls += [u for u in _article_links(sraw, sfinal or sections[0], host, sfinal or sections[0]) if u not in urls]
     items, prov = [], []
     for url in urls[:max_articles]:
+        _NET.last_requests = 1
         araw, afinal = _get(url, timeout=5.0)
-        requests += 1
+        requests += getattr(_NET, "last_requests", 1)
         meta = _article_meta(araw) if araw else None
         if not meta:
             continue
@@ -679,8 +753,9 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     if website.get("status") != "available" or (value.get("identity_assessment") or {}).get("publishable") is not True:
         return evidence("external_footprint", "not_found", "company_owned_site", "https://data.brreg.no",
                         note="No identity-verified company website; nothing published."), metrics
+    _NET.last_requests = 2
     raw, final = _get(source)
-    metrics["requests"] += 2
+    metrics["requests"] += getattr(_NET, "last_requests", 2)
     careers, news_pages, feeds, contact, job_postings = [], [], [], {}, []
     contact_links = []
     item_sources: dict[str, list[dict[str, str]]] = {}
@@ -765,8 +840,9 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
 
     craw, cfinal, csha = None, None, None
     if contact_links and (not contact.get("email") or not contact.get("phone") or not value.get("social_links")):
+        _NET.last_requests = 1
         craw, cfinal = _get(contact_links[0], timeout=5.0)
-        metrics["requests"] += 1
+        metrics["requests"] += getattr(_NET, "last_requests", 1)
         if craw:
             metrics["bytes"] += len(craw)
             csha, csrc = _sha(craw), cfinal or contact_links[0]
@@ -795,8 +871,9 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         ct_host = ct_p.netloc.lower()
         base_domain = _registered_domain(final) if final else ""
         if (base_domain and (ct_host == base_domain or ct_host.endswith("." + base_domain))) or any(d in ct_host for d in ("teamtailor.com", "recman.no", "jobbnorge.no", "webcruiter.no")):
+            _NET.last_requests = 1
             ct_raw, ct_final = _get(career_target, timeout=5.0)
-            metrics["requests"] += 1
+            metrics["requests"] += getattr(_NET, "last_requests", 1)
             if ct_raw:
                 metrics["bytes"] += len(ct_raw)
                 ct_sha = _sha(ct_raw)
@@ -823,8 +900,9 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
 
     activity = []
     for feed in feeds[:2]:
+        _NET.last_requests = 1
         fraw, ffinal = _get(feed)
-        metrics["requests"] += 2
+        metrics["requests"] += getattr(_NET, "last_requests", 1)
         if fraw:
             metrics["bytes"] += len(fraw)
             for item in _parse_feed(fraw, ffinal or feed):
