@@ -430,8 +430,35 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
                 text = fallback_text
         identity_excerpt = _identity_text_excerpt(soup)
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
-        description_tag = soup.select_one('meta[name="description"], meta[property="og:description"]')
-        description = str(description_tag.get("content") or "").strip() if description_tag else ""
+        if not title:
+            for meta in soup.find_all("meta"):
+                attr_name = (meta.get("name") or meta.get("property") or "").strip().lower()
+                if attr_name in {"og:title", "twitter:title"}:
+                    cand_title = str(meta.get("content") or "").strip()
+                    if cand_title:
+                        title = cand_title
+                        break
+        if not title:
+            h1 = soup.find("h1")
+            if h1:
+                title = h1.get_text(" ", strip=True)
+
+        structured_orgs = _jsonld_organisations(structured)
+        description = ""
+        for meta in soup.find_all("meta"):
+            attr_name = (meta.get("name") or meta.get("property") or "").strip().lower()
+            if attr_name in {"description", "og:description", "twitter:description"}:
+                cand_desc = str(meta.get("content") or "").strip()
+                if cand_desc:
+                    description = cand_desc
+                    break
+        if not description and structured_orgs and structured_orgs[0].get("description"):
+            desc_val = str(structured_orgs[0]["description"]).strip()
+            if desc_val:
+                description = desc_val
+        if not description and raw_text and len(raw_text.strip()) >= 40:
+            description = " ".join(raw_text.split())[:300]
+
         value = {
             "requested_url": normalized,
             "final_url": final_url,
@@ -441,7 +468,7 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
             "main_text_excerpt": text[:5000],
             "identity_text_excerpt": identity_excerpt,
             "social_links": _social_links(final_url, soup),
-            "structured_organisations": _jsonld_organisations(structured),
+            "structured_organisations": structured_orgs,
             "content_sha256": __import__("hashlib").sha256(raw).hexdigest(),
             "extraction_state": _extraction_state(text, soup),
         }
