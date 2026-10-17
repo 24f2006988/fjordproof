@@ -116,6 +116,23 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _raw_tokens(value: Any) -> list[str]:
+    text = str(value or "").strip().casefold()
+    folded: list[str] = []
+    for ch in text:
+        if ch in "æøå":
+            folded.append(ch)
+        else:
+            norm = unicodedata.normalize("NFKD", ch)
+            folded.append("".join(c for c in norm if not unicodedata.combining(c)))
+    cleaned = "".join(folded)
+    return [tok for tok in re.findall(r"[a-z0-9æøå]+", cleaned) if tok not in LEGAL_AND_GENERIC and len(tok) > 1]
+
+
+def _norwegian_digraphs(text: str) -> str:
+    return text.translate(str.maketrans({"å": "aa", "ø": "oe", "æ": "ae"}))
+
+
 GENERIC_DESCRIPTIVE_TOKENS = {
     "markedsforing", "markedforing", "revisjon", "regnskap", "radgivning", "raadgivning",
     "drift", "forvaltning", "service", "consulting", "management", "utvikling",
@@ -126,15 +143,53 @@ GENERIC_DESCRIPTIVE_TOKENS = {
 
 def assess_social_identity(profile: dict[str, Any], link: dict[str, str]) -> dict[str, Any]:
     core = _tokens(profile.get("name"))
+    raw_core = _raw_tokens(profile.get("name"))
     parsed = urllib.parse.urlparse(link.get("url") or "")
     handle_text = urllib.parse.unquote(parsed.path)
     handle_compact = "".join(_tokens(handle_text))
-    matched = [token for token in core if token in handle_compact]
+
+    matched = []
+    for i, tok in enumerate(core):
+        raw_tok = raw_core[i] if i < len(raw_core) else tok
+        digraph_tok = _norwegian_digraphs(raw_tok)
+        if tok in handle_compact or digraph_tok in handle_compact:
+            matched.append(tok)
+
     core_compact = "".join(core)
+    digraph_core_compact = "".join(_norwegian_digraphs(rt) for rt in raw_core)
     ratio = len(set(matched)) / len(set(core)) if core else 0.0
     distinctive = [token for token in core if token not in GENERIC_DESCRIPTIVE_TOKENS]
-    dist_matched = [token for token in distinctive if token in handle_compact]
-    if core_compact and core_compact in handle_compact:
+    dist_matched = []
+    for i, tok in enumerate(core):
+        if tok in distinctive:
+            raw_tok = raw_core[i] if i < len(raw_core) else tok
+            digraph_tok = _norwegian_digraphs(raw_tok)
+            if tok in handle_compact or digraph_tok in handle_compact:
+                dist_matched.append(tok)
+
+    has_distinctive_plus_prefix = False
+    if len(core) >= 2:
+        for i, tok in enumerate(core):
+            raw_tok = raw_core[i] if i < len(raw_core) else tok
+            digraph_tok = _norwegian_digraphs(raw_tok)
+            tok_matches = (tok in handle_compact or digraph_tok in handle_compact)
+            if tok_matches and (len(tok) >= 5 or len(digraph_tok) >= 5):
+                for j, other_tok in enumerate(core):
+                    if j == i:
+                        continue
+                    other_raw = raw_core[j] if j < len(raw_core) else other_tok
+                    other_digraph = _norwegian_digraphs(other_raw)
+                    pref = other_tok[:4]
+                    digraph_pref = other_digraph[:4]
+                    if (len(other_tok) >= 4 and pref in handle_compact) or (len(other_digraph) >= 4 and digraph_pref in handle_compact):
+                        has_distinctive_plus_prefix = True
+                        if other_tok not in matched:
+                            matched.append(other_tok)
+                        break
+            if has_distinctive_plus_prefix:
+                break
+
+    if (core_compact and core_compact in handle_compact) or (digraph_core_compact and digraph_core_compact in handle_compact):
         score = 0.98
         reason = "normalized legal-name sequence appears in the social handle"
     elif len(core) == 1 and matched:
@@ -146,6 +201,9 @@ def assess_social_identity(profile: dict[str, Any], link: dict[str, str]) -> dic
     elif len(distinctive) == 1 and len(dist_matched) == 1 and len(distinctive[0]) >= 4:
         score = 0.92
         reason = "distinctive legal-name brand token appears in the social handle"
+    elif has_distinctive_plus_prefix:
+        score = 0.91
+        reason = "distinctive brand token and secondary prefix appear in social handle"
     else:
         score = 0.3
         reason = "social handle lacks strong exact-entity name evidence"

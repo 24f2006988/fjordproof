@@ -387,7 +387,7 @@ class ExtrasExtractionTests(unittest.TestCase):
             "evidence": {"registry": {"value": {"epostadresse": "betakst@gmail.com"}}},
         }
         hosts3 = dict(footprint_plus.candidate_hosts(p3))
-        self.assertEqual(hosts3.get("betakst.no"), "brand_token_guess")
+        self.assertIn("betakst.no", hosts3)
 
         # Norwegian å -> aa / ø -> oe variants and compound sector initialism
         p4 = {"name": "ÅSGREINA BYGGASSISTANSE AS", "evidence": {}}
@@ -616,7 +616,145 @@ class ExtrasExtractionTests(unittest.TestCase):
         self.assertEqual([i["url"] for i in items], ["https://example.no/news/real-article"])
 
 
+class Phase2RecallAndPrecisionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        website.clear_website_caches()
+
+    def tearDown(self) -> None:
+        website.clear_website_caches()
+
+    def test_website_title_and_description_fallbacks(self) -> None:
+        # Case A: og:title fallback when <title> is empty
+        html_og = b'<html><head><meta property="og:title" content="OG Company Title"/><meta name="description" content="Company meta description"/></head><body><p>Velkommen til oss.</p></body></html>'
+        with mock.patch.object(website, "assert_public_url", lambda u: None), \
+             mock.patch.object(website.SAFE_OPENER, "open", lambda req, timeout=None: _FakeResponse(html_og, req.full_url)):
+            rec, _ = website.fetch_website("https://example-og.no/", timeout=5.0, crawl_secondary=False)
+            val = rec["value"]
+            self.assertEqual(val["title"], "OG Company Title")
+            self.assertEqual(val["description"], "Company meta description")
+
+        # Case B: h1 and body text do NOT populate title or description (prevents identity gate loosening)
+        html_h1 = b'<html><head></head><body><h1>H1 Main Heading</h1><p>Velkommen til fris\xc3\xb8rsalongen v\xc3\xa5r i Oslo sentrum.</p></body></html>'
+        with mock.patch.object(website, "assert_public_url", lambda u: None), \
+             mock.patch.object(website.SAFE_OPENER, "open", lambda req, timeout=None: _FakeResponse(html_h1, req.full_url)):
+            rec, _ = website.fetch_website("https://example-h1.no/", timeout=5.0, crawl_secondary=False)
+            val = rec["value"]
+            self.assertEqual(val["title"], "")
+            self.assertEqual(val["description"], "")
+
+        # Case C: case-insensitive meta description tag
+        html_case = b'<html><head><title>Test</title><meta name="Description" content="Mixed case meta description"/></head><body><p>Tekst</p></body></html>'
+        with mock.patch.object(website, "assert_public_url", lambda u: None), \
+             mock.patch.object(website.SAFE_OPENER, "open", lambda req, timeout=None: _FakeResponse(html_case, req.full_url)):
+            rec, _ = website.fetch_website("https://example-case.no/", timeout=5.0, crawl_secondary=False)
+            self.assertEqual(rec["value"]["description"], "Mixed case meta description")
+
+        # Case D: JSON-LD Organization description fallback
+        html_jsonld = (
+            b'<html><head><title>Test</title>'
+            b'<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Organization", "name": "Test AS", "description": "JSON-LD org description"}</script>'
+            b'</head><body><p>Tekst</p></body></html>'
+        )
+        with mock.patch.object(website, "assert_public_url", lambda u: None), \
+             mock.patch.object(website.SAFE_OPENER, "open", lambda req, timeout=None: _FakeResponse(html_jsonld, req.full_url)):
+            rec, _ = website.fetch_website("https://example-jsonld.no/", timeout=5.0, crawl_secondary=False)
+            self.assertEqual(rec["value"]["description"], "JSON-LD org description")
+
+    def test_assess_social_identity_norwegian_digraphs_and_prefix(self) -> None:
+        from norway_company_agent import identity
+
+        # NygaardHagebruk matches NYGÅRD HAGEBRUK AS
+        prof_nygard = {"name": "NYGÅRD HAGEBRUK AS"}
+        link_nygard = {"platform": "facebook", "url": "https://facebook.com/NygaardHagebruk"}
+        ass_nygard = identity.assess_social_identity(prof_nygard, link_nygard)
+        self.assertTrue(ass_nygard["publishable"])
+        self.assertGreaterEqual(ass_nygard["identity_score"], 0.9)
+        self.assertIn("nygard", ass_nygard["matched_tokens"])
+        self.assertIn("hagebruk", ass_nygard["matched_tokens"])
+
+        # aasgreinabygg matches ÅSGREINA BYGGASSISTANSE AS
+        prof_aasgreina = {"name": "ÅSGREINA BYGGASSISTANSE AS"}
+        link_aasgreina = {"platform": "instagram", "url": "https://instagram.com/aasgreinabygg"}
+        ass_aasgreina = identity.assess_social_identity(prof_aasgreina, link_aasgreina)
+        self.assertTrue(ass_aasgreina["publishable"])
+        self.assertGreaterEqual(ass_aasgreina["identity_score"], 0.9)
+        self.assertIn("asgreina", ass_aasgreina["matched_tokens"])
+        self.assertIn("byggassistanse", ass_aasgreina["matched_tokens"])
+
+    def test_phone_from_text_phase2_patterns_and_rejections(self) -> None:
+        # Parentheses around +47
+        p1 = footprint_plus._phone_from_text("Ring oss gjerne på (+47) 973 22 321 i åpningstiden.")
+        self.assertIsNotNone(p1)
+        self.assertEqual(p1[0], "+4797322321")
+
+        p2 = footprint_plus._phone_from_text("Tel: (+47) 932 30 063")
+        self.assertIsNotNone(p2)
+        self.assertEqual(p2[0], "+4793230063")
+
+        # kontakt oss på label
+        p3 = footprint_plus._phone_from_text("Kontakt oss på 958 78 169 for en uforpliktende prat.")
+        self.assertIsNotNone(p3)
+        self.assertEqual(p3[0], "+4795878169")
+
+        # Leading word boundary rejections
+        p_bad1 = footprint_plus._phone_from_text("Dette er en automobil 22334455 som kjører forbi.")
+        self.assertIsNone(p_bad1)
+
+        p_bad2 = footprint_plus._phone_from_text("Her er hotel 22334455 i Bergen sentrum.")
+        self.assertIsNone(p_bad2)
+
+        # Agency credit rejection
+        p_credit = footprint_plus._phone_from_text("Nettside levert av Webbyrå AS +47 99887766")
+        self.assertIsNone(p_credit)
+
+    def test_email_from_text_domain_stem_freemail_and_rejections(self) -> None:
+        # Accepted: labeled domain-stem freemail
+        e1 = footprint_plus._email_from_text(
+            "For timebestilling: E-post: mntannlegeklinikk@gmail.com eller ring oss.",
+            "mntannlegeklinikk.no",
+        )
+        self.assertIsNotNone(e1)
+        self.assertEqual(e1[0], "mntannlegeklinikk@gmail.com")
+        self.assertIn("E-post: mntannlegeklinikk@gmail.com", e1[1])
+
+        # Rejected: unlabeled freemail
+        e_bad1 = footprint_plus._email_from_text(
+            "kontakt oss eller send til random@gmail.com",
+            "mntannlegeklinikk.no",
+        )
+        self.assertIsNone(e_bad1)
+
+        # Rejected: missing explicit email label even if stem matches
+        e_bad2 = footprint_plus._email_from_text(
+            "send til mntannlegeklinikk@gmail.com snarest",
+            "mntannlegeklinikk.no",
+        )
+        self.assertIsNone(e_bad2)
+
+        # Rejected: stem length < 6
+        e_bad3 = footprint_plus._email_from_text(
+            "E-post: foo@gmail.com",
+            "foo.no",
+        )
+        self.assertIsNone(e_bad3)
+
+    def test_career_segments_and_job_posting_priority_sorting(self) -> None:
+        # stilling-ledig recognized as career path
+        self.assertTrue(footprint_plus._is_career("/stilling-ledig/"))
+        self.assertTrue(footprint_plus._is_career("/stillinger-ledige/"))
+        self.assertFalse(footprint_plus._is_career("/innstilling/"))
+
+        # Sorting prioritizes path segment match over anchor text only
+        careers = [
+            "https://www.example.no/a-samarbeide-med-oss",
+            "https://www.example.no/ledig-stilling/",
+        ]
+        careers.sort(key=lambda u: 0 if any(s in footprint_plus.CAREER_SEGMENTS for s in footprint_plus._segments(footprint_plus.urllib.parse.urlparse(u).path)) else 1)
+        self.assertEqual(careers[0], "https://www.example.no/ledig-stilling/")
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

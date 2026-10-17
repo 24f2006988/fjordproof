@@ -553,7 +553,7 @@ def hard_identity_proof(
     queue = [base]
     fetched = 0
     first_html = None
-    homepage_has_foreign_org = False
+    foreign_org_seen = False
     wval = website.get("value") if isinstance(website.get("value"), dict) else None
     while queue and fetched < max_pages:
         url = queue.pop(0)
@@ -593,12 +593,10 @@ def hard_identity_proof(
         raw_squeezed = re.sub(r"(?<=\d)[\s.\-_](?=\d)", "", html)
         if org_re and (org_re.search(squeezed) or org_re.search(raw_squeezed)):
             return f"exact organisation number printed on {url}", metrics
-        page_has_foreign_org = _has_foreign_labeled_org(text, allowed_orgs)
-        if fetched == 1 and page_has_foreign_org:
-            homepage_has_foreign_org = True
+        if _has_foreign_labeled_org(text, allowed_orgs):
+            foreign_org_seen = True
         if (
-            not page_has_foreign_org
-            and not homepage_has_foreign_org
+            not foreign_org_seen
             and zipc
             and any(len(s) >= 6 and s in text.casefold() for s in targets["streets"])
             and re.search(rf"(?<!\d){zipc}(?!\d)", text)
@@ -675,7 +673,7 @@ NOT_NEWS_SEGMENTS = {
     "tag", "tags", "post-tag", "post-tags", "author", "forfatter", "page", "side", "arkiv", "archive", "feed",
 }
 CAREER_SEGMENTS = {
-    "karriere", "career", "careers", "ledige-stillinger", "ledig-stilling", "stillinger",
+    "karriere", "career", "careers", "ledige-stillinger", "ledig-stilling", "stilling-ledig", "stillinger-ledige", "stillinger",
     "ledige-jobber", "jobbe-hos-oss", "jobb-hos-oss", "work-with-us", "join-us",
     "rekruttering", "vacancies", "vacancy", "jobs", "job", "jobb",
 }
@@ -686,7 +684,7 @@ CAREER_TEXT_RE = re.compile(
 NEWS_TEXT_RE = re.compile(r"\b(nyheter|siste\s+nytt|news|aktuelt|blogg|blog|presse|press)\b", re.I)
 SITEMAP_NEWS_FILE_RE = re.compile(r"(nyhet|news|blogg?|aktuelt|presse|press|artikkel|innlegg|post)", re.I)
 PHONE_LABEL_RE = re.compile(
-    r"(?:tlf\.?|tel\.?|telefon|phone|mobil|sentralbord|ring(?:\s+oss)?)\b[\s.:]*((?:\+\s?47|0047)?[\s.\-]?(?:[2-9]\d[\s.\-]?\d{2}[\s.\-]?\d{2}[\s.\-]?\d{2}|[2-9]\d{2}[\s.\-]?\d{2}[\s.\-]?\d{3}|\d{8}))",
+    r"(?<!\w)(?:tlf\.?|tel\.?|telefon|phone|mobil|sentralbord|ring(?:\s+oss)?|kontakt(?:\s+oss)?(?:\s+p[aå])?)\b[\s.:]*((?:(?:\(\+47\)|\+47|0047)\s*)?[\s.\-]?(?:[2-9]\d[\s.\-]?\d{2}[\s.\-]?\d{2}[\s.\-]?\d{2}|[2-9]\d{2}[\s.\-]?\d{2}[\s.\-]?\d{3}|\d{8}))",
     re.I,
 )
 ATS_DOMAINS = (
@@ -742,19 +740,34 @@ def _norm_phone(value: str) -> str | None:
 EMAIL_TEXT_RE = re.compile(
     r"\b([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9](?:[a-zA-Z0-9\-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,15})\b"
 )
+FREE_MAIL_DOMAINS = {
+    "gmail.com", "hotmail.com", "outlook.com", "online.no",
+    "yahoo.com", "live.no", "icloud.com",
+}
+EMAIL_LABEL_RE = re.compile(r"(?<!\w)(?:e-?post(?:adresse)?|e-?mail)\s*[:\-]?\s*", re.I)
 
 
 def _phone_from_text(text: str) -> tuple[str, str] | None:
-    """A Norwegian number printed next to a phone label on a verified company page: (number, literal snippet)."""
+    """A Norwegian number printed next to a phone label or with explicit country code on a verified company page: (number, literal snippet)."""
     for m in PHONE_LABEL_RE.finditer(text):
         phone = _norm_phone(m.group(1))
+        if phone:
+            return phone, m.group(0).strip()[:160]
+    for m in re.finditer(r"(?<!\w)(?:\(\+47\)|\+47)[\s.\-]*([2-9]\d[\s.\-]?\d{2}[\s.\-]?\d{2}[\s.\-]?\d{2}|[2-9]\d{2}[\s.\-]?\d{2}[\s.\-]?\d{3})\b", text):
+        pre_ctx = text[max(0, m.start() - 60):m.start()].lower()
+        if any(credit in pre_ctx for credit in ("levert av", "design av", "utviklet av", "nettside av", "webdesign", "produsert av")):
+            continue
+        phone = _norm_phone(m.group(0))
         if phone:
             return phone, m.group(0).strip()[:160]
     return None
 
 
 def _email_from_text(text: str, site_domain: str) -> tuple[str, str] | None:
-    """Plain-text email printed on a verified company page, strictly on the site's own registered domain."""
+    """Plain-text email printed on a verified company page.
+
+    Prefers site's own registered domain; accepts domain-stem freemail only when explicitly labeled.
+    """
     if not site_domain:
         return None
     site_dom = site_domain.lower().removeprefix("www.")
@@ -763,12 +776,36 @@ def _email_from_text(text: str, site_domain: str) -> tuple[str, str] | None:
         if "@" not in addr:
             continue
         email_host = addr.rsplit("@", 1)[1]
-        if email_host != site_dom and not email_host.endswith("." + site_dom):
-            continue
-        start = max(0, m.start() - 30)
-        end = min(len(text), m.end() + 30)
-        return addr[:120], text[start:end].strip()[:160]
+        if email_host == site_dom or email_host.endswith("." + site_dom):
+            start = max(0, m.start() - 30)
+            end = min(len(text), m.end() + 30)
+            return addr[:120], text[start:end].strip()[:160]
+
+    stem = site_dom.split(".")[0].lower()
+    clean_stem = re.sub(r"[._\-]", "", stem).lower()
+    if len(clean_stem) >= 6:
+        for m in EMAIL_TEXT_RE.finditer(text):
+            addr = m.group(1).strip(".,;:()[]<>\"'").lower()
+            if "@" not in addr:
+                continue
+            local_part, email_host = addr.rsplit("@", 1)
+            if email_host in FREE_MAIL_DOMAINS:
+                clean_local = re.sub(r"[._\-]", "", local_part).lower()
+                if clean_local == clean_stem:
+                    pre_text = text[max(0, m.start() - 40):m.start()]
+                    label_match = list(EMAIL_LABEL_RE.finditer(pre_text))
+                    if label_match and label_match[-1].end() == len(pre_text):
+                        full_label = label_match[-1].group(0)
+                        span = f"{full_label}{m.group(1).strip('.,;:()[]<>\"\'')}"
+                        return addr[:120], span[:160]
     return None
+
+
+def _script_texts(soup: BeautifulSoup | None) -> str:
+    if soup is None:
+        return ""
+    scripts = soup.find_all("script")
+    return " ".join(s.get_text() for s in scripts if s.get_text())
 
 
 def _find_social_span(key: str, text: str) -> str | None:
@@ -1126,12 +1163,12 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     if raw and final and soup is not None:
         home_plain_text = soup.get_text(" ", strip=True)
         if "phone" not in contact:
-            found_phone = _phone_from_text(home_plain_text) or _phone_from_text(page_text)
+            found_phone = _phone_from_text(home_plain_text) or _phone_from_text(_script_texts(soup))
             if found_phone:
                 contact["phone"] = found_phone[0]
                 note("contact_phone", found_phone[0], final, home_sha, found_phone[1])
         if "email" not in contact:
-            found_email = _email_from_text(home_plain_text, base_domain) or _email_from_text(page_text, base_domain)
+            found_email = _email_from_text(home_plain_text, base_domain) or _email_from_text(_script_texts(soup), base_domain)
             if found_email:
                 contact["email"] = found_email[0]
                 note("contact_email", found_email[0], final, home_sha, found_email[1])
@@ -1197,12 +1234,12 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
                         cached_social_candidates.append((norm, p_src, p_sha, p_html))
             p_plain = p_soup.get_text(" ", strip=True)
             if "phone" not in contact:
-                found_phone = _phone_from_text(p_plain) or _phone_from_text(p_html)
+                found_phone = _phone_from_text(p_plain) or _phone_from_text(_script_texts(p_soup))
                 if found_phone:
                     contact["phone"] = found_phone[0]
                     note("contact_phone", found_phone[0], p_src, p_sha, found_phone[1])
             if "email" not in contact:
-                found_email = _email_from_text(p_plain, base_domain) or _email_from_text(p_html, base_domain)
+                found_email = _email_from_text(p_plain, base_domain) or _email_from_text(_script_texts(p_soup), base_domain)
                 if found_email:
                     contact["email"] = found_email[0]
                     note("contact_email", found_email[0], p_src, p_sha, found_email[1])
@@ -1235,12 +1272,12 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
                         note("contact_phone", phone, csrc, csha, str(ca))
             c_plain_text = csoup.get_text(" ", strip=True)
             if "phone" not in contact:
-                found_phone = _phone_from_text(c_plain_text) or _phone_from_text(c_html)
+                found_phone = _phone_from_text(c_plain_text) or _phone_from_text(_script_texts(csoup))
                 if found_phone:
                     contact["phone"] = found_phone[0]
                     note("contact_phone", found_phone[0], csrc, csha, found_phone[1])
             if "email" not in contact:
-                found_email = _email_from_text(c_plain_text, base_domain) or _email_from_text(c_html, base_domain)
+                found_email = _email_from_text(c_plain_text, base_domain) or _email_from_text(_script_texts(csoup), base_domain)
                 if found_email:
                     contact["email"] = found_email[0]
                     note("contact_email", found_email[0], csrc, csha, found_email[1])
@@ -1339,7 +1376,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             jhref = raw_jhref.split("?", 1)[0]
             jp = urllib.parse.urlparse(jhref)
             jsegs = _segments(jp.path)
-            if len(jsegs) >= 2 and jsegs[0] in {"jobs", "stillinger", "ledige-stillinger", "ledig-stilling", "vacancies"} and not jsegs[1].isdigit() and jsegs[-1] not in {"register", "apply", "sok"}:
+            if len(jsegs) >= 2 and jsegs[0] in {"jobs", "stillinger", "ledige-stillinger", "ledig-stilling", "stilling-ledig", "stillinger-ledige", "vacancies"} and not jsegs[1].isdigit() and jsegs[-1] not in {"register", "apply", "sok"}:
                 jtitle = " ".join(ja.get_text(" ", strip=True).split())[:200]
                 span_str = str(ja)
                 if jtitle.casefold() in generic_ctas:
@@ -1369,20 +1406,25 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     if raw and final and soup is not None:
         _extract_jobs_from_soup(soup, final, home_sha)
 
-    # If career entry points discovered (including via sitemap), fetch the primary career page to find structured job postings
+    # Sort careers so path-matched CAREER_SEGMENTS come ahead of anchor-text-only career links
+    careers.sort(key=lambda u: 0 if any(s in CAREER_SEGMENTS for s in _segments(urllib.parse.urlparse(u).path)) else 1)
+
+    # If career entry points discovered (including via sitemap), fetch up to 2 career pages to find structured job postings
     if careers and len(job_postings) < 6:
-        career_target = careers[0]
-        ct_p = urllib.parse.urlparse(career_target)
-        ct_host = ct_p.netloc.lower()
-        if (base_domain and (ct_host == base_domain or ct_host.endswith("." + base_domain))) or any(d in ct_host for d in ("teamtailor.com", "recman.no", "jobbnorge.no", "webcruiter.no")):
-            _NET.last_requests = 1
-            ct_raw, ct_final = _get(career_target, timeout=5.0)
-            metrics["requests"] += getattr(_NET, "last_requests", 1)
-            if ct_raw:
-                metrics["bytes"] += len(ct_raw)
-                ct_sha = _sha(ct_raw)
-                ct_soup = BeautifulSoup(ct_raw.decode("utf-8", errors="replace"), "lxml")
-                _extract_jobs_from_soup(ct_soup, ct_final or career_target, ct_sha)
+        for career_target in careers[:2]:
+            ct_p = urllib.parse.urlparse(career_target)
+            ct_host = ct_p.netloc.lower()
+            if (base_domain and (ct_host == base_domain or ct_host.endswith("." + base_domain))) or any(d in ct_host for d in ("teamtailor.com", "recman.no", "jobbnorge.no", "webcruiter.no")):
+                _NET.last_requests = 1
+                ct_raw, ct_final = _get(career_target, timeout=5.0)
+                metrics["requests"] += getattr(_NET, "last_requests", 1)
+                if ct_raw:
+                    metrics["bytes"] += len(ct_raw)
+                    ct_sha = _sha(ct_raw)
+                    ct_soup = BeautifulSoup(ct_raw.decode("utf-8", errors="replace"), "lxml")
+                    _extract_jobs_from_soup(ct_soup, ct_final or career_target, ct_sha)
+                if len(job_postings) >= 6:
+                    break
 
     social = []
     cpage_text = craw.decode("utf-8", errors="replace") if craw else ""
