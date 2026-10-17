@@ -1,6 +1,11 @@
 import unittest
 import time
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 from norway_company_agent.batch import evidence_terminal_state, terminal_envelope, validate_envelopes
 from norway_company_agent.budget import BudgetGuard
 from norway_company_agent.contract import to_contract
