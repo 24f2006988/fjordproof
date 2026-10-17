@@ -111,6 +111,8 @@ body{overflow-x:hidden}
 td:first-child,th:first-child{white-space:nowrap}
 @media(min-width:800px){.grid2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.cmptable thead th{white-space:normal;min-width:9em}
+.cmptable th[scope=row]{position:sticky;left:0;background:var(--panel);z-index:1}
 table{border-collapse:collapse;width:100%;font-size:.88rem}
 th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--muted);font-weight:600;white-space:nowrap}
@@ -224,17 +226,29 @@ function cmpBar(){
   const b = document.getElementById("cmpbar"); b.replaceChildren();
   if (!st.cmp.size){ b.hidden = true; return; }
   b.hidden = false;
-  b.append(el("span", {text:st.cmp.size + " selected (max 4)"}), el("button", {class:"btn", type:"button", disabled:st.cmp.size < 2, text:"Compare", onclick:() => { location.hash = "#/compare"; }}), el("button", {class:"btn sec", type:"button", text:"Clear", onclick:() => { st.cmp.clear(); render(); }}));
+  b.append(el("span", {text:st.cmp.size + " selected (max 4)"}), el("button", {class:"btn", type:"button", disabled:st.cmp.size < 2, text:"Compare", onclick:() => { location.hash = cmpHash(); }}), el("button", {class:"btn sec", type:"button", text:"Clear", onclick:() => { st.cmp.clear(); render(); }}));
 }
 
 /* ---------- compare ---------- */
+/* The selection lives in the link (#/compare/<org>,<org>), so a comparison can be reloaded, bookmarked or shared. */
+function cmpHash(){ return "#/compare/" + [...st.cmp].join(","); }
+function cmpPicker(){
+  const opts = el("datalist", {id:"cmpopts"}, DATA.filter(d => !st.cmp.has(d.org)).map(d => el("option", {value:d.name + " (" + d.org + ")"})));
+  const add = () => { const v = inp.value.trim(); const m = v.match(/(\d{9})\)?$/) || [null, v.replace(/\s/g,"")]; const d = BY.get(m[1]) || DATA.find(x => x.name.toLowerCase() === v.toLowerCase());
+    if (!d){ msg.textContent = "No company matches “" + v + "”. Type a name or a 9-digit organisation number."; return; }
+    if (st.cmp.size >= 4){ msg.textContent = "You can compare up to four companies. Remove one first."; return; }
+    st.cmp.add(d.org); location.hash = cmpHash(); };
+  const inp = el("input", {type:"search", id:"cmpadd", list:"cmpopts", placeholder:"Add a company by name or organisation number", "aria-label":"Add a company to the comparison", onkeydown: e => { if (e.key === "Enter") add(); }, onchange: e => { if (/\(\d{9}\)$/.test(e.target.value)) add(); }});
+  const msg = el("p", {class:"meta", role:"status"});
+  return el("div", {}, el("div", {class:"tools"}, inp, el("button", {class:"btn", type:"button", text:"Add", onclick:add})), opts, msg);
+}
 function compareView(){
   const ds = [...st.cmp].map(o => BY.get(o)).filter(Boolean);
   const rows = [["Organisation number", d=>d.org],["Legal form", d=>val(d,"legal_form") ?? "Not found"],["Municipality", d=>val(d,"municipality") ?? "Not found"],["Industry", d=>{const i=val(d,"industry");return i? i.label + " (" + i.code + ")" : "Not found";}],["Status", d=>status(d)[0]],["Employees (registry)", d=>val(d,"employees") ?? "Not reported"],
     ["Latest accounts year", d=>{const a=latestAcc(d);return a? (a.period?.tilDato||"").slice(0,4) : "None filed";}],["Revenue (NOK)", d=>{const a=latestAcc(d);return a? money(a.revenue) : "–";}],["Operating result (NOK)", d=>{const a=latestAcc(d);return a? money(a.operating_result) : "–";}],["Annual result (NOK)", d=>{const a=latestAcc(d);return a? money(a.annual_result) : "–";}],["Equity (NOK)", d=>{const a=latestAcc(d);return a? money(a.equity) : "–";}],["Total assets (NOK)", d=>{const a=latestAcc(d);return a? money(a.assets) : "–";}],
     ["Current roles", d=>activeRoles(d).length || "None listed"],["Sub-units", d=>(val(d,"locations")?.locations||[]).length || "None"],["Website", d=>val(d,"official_website") ?? "Not verified"],["Dated activity items", d=>activity(d).length || "None found"],["Fields found", d=>found(d) + " / " + FIELDS.length]];
-  return el("div", {}, el("a", {class:"back", href:"#/", text:"← All companies"}), el("div", {class:"panel"}, el("h2", {text:"Side-by-side comparison"}), ds.length < 2 ? el("p", {class:"empty", text:"Pick at least two companies on the list."}) :
-    el("div", {class:"tablewrap"}, el("table", {}, el("thead", {}, el("tr", {}, el("th", {text:""}), ds.map(d => el("th", {}, el("a", {href:"#/" + d.org, text:d.name}))))), el("tbody", {}, rows.map(([l,fn]) => el("tr", {}, el("th", {scope:"row", text:l}), ds.map(d => el("td", {class:typeof fn(d) === "string" && /^[\d\s\u00a0−-]+$/.test(fn(d)) ? "num" : "", text:String(fn(d))})))))))),
+  return el("div", {}, el("a", {class:"back", href:"#/", text:"← All companies"}), el("div", {class:"panel"}, el("h2", {text:"Side-by-side comparison"}), cmpPicker(), ds.length < 2 ? el("p", {class:"empty", text:ds.length ? "Add at least one more company to compare." : "Add two to four companies above, or tick “Compare” on the company list."}) :
+    el("div", {class:"tablewrap"}, el("table", {class:"cmptable"}, el("thead", {}, el("tr", {}, el("th", {text:""}), ds.map(d => el("th", {}, el("a", {href:"#/" + d.org, text:d.name}), " ", el("button", {class:"btn sec", type:"button", "aria-label":"Remove " + d.name + " from the comparison", text:"Remove", onclick:() => { st.cmp.delete(d.org); location.hash = cmpHash(); }}))))), el("tbody", {}, rows.map(([l,fn]) => el("tr", {}, el("th", {scope:"row", text:l}), ds.map(d => el("td", {class:typeof fn(d) === "string" && /^[\d\s\u00a0−-]+$/.test(fn(d)) ? "num" : "", text:String(fn(d))})))))))),
     el("p", {class:"meta", text:"Figures are taken from each company's profile; open a profile to see the source and date for every value."}));
 }
 
@@ -341,9 +355,9 @@ function profileView(d){
 
 /* ---------- router ---------- */
 function render(){
-  const h = location.hash.replace(/^#\/?/, "").split("/")[0];
+  const [h, arg] = location.hash.replace(/^#\/?/, "").split("/");
   app.replaceChildren();
-  if (h === "compare") app.append(compareView());
+  if (h === "compare"){ if (arg !== undefined) st.cmp = new Set(arg.split(",").filter(o => BY.has(o)).slice(0, 4)); app.append(compareView()); }
   else if (/^\d{9}$/.test(h) && BY.has(h)){ app.append(profileView(BY.get(h))); document.title = BY.get(h).name + " – FjordProof"; cmpBar(); return; }
   else app.append(listView());
   document.title = "FjordProof Company Profiles"; cmpBar();
