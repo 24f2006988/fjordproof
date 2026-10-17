@@ -259,6 +259,8 @@ function summary(d){
   const syn = d.syn || {};
   const asmt = (syn.statements || []).find(x => x.topic === "assessment");
   if (syn.headline) p.append(el("p", {class:"headline"}, el("strong", {text: syn.headline}), refs(d, asmt ? asmt.evidence_ids : claim(d,"name")?.e)));
+  const conc = (syn.statements || []).find(x => x.topic === "conclusion");
+  if (syn.conclusion) p.append(el("p", {class:"conclusion"}, el("strong", {text:"Conclusion: "}), syn.conclusion, refs(d, conc ? conc.evidence_ids : [])));
   const legal = val(d,"legal_form"), mun = val(d,"municipality"), ind = val(d,"industry");
   const idRef = claim(d,"name")?.e;
   add(d.name, legal ? " is registered as " + legal : " is registered", mun ? " in " + mun : "", " (organisation number " + d.org + ")", refs(d, idRef), ". ", status(d)[0] === "Active in registry" ? "The registry shows no bankruptcy or liquidation." : status(d)[0] + " according to the registry.", refs(d, claim(d,"insolvency_status")?.e));
@@ -282,7 +284,9 @@ function unknowns(d){
   const rows = FIELDS.filter(f => claim(d,f) && claim(d,f).s !== "available");
   const box = el("div", {class:"panel"}, el("h2", {text:"What is unknown"}));
   if (!rows.length){ box.append(el("p", {class:"empty", text:"Every tracked field was found."})); return box; }
-  box.append(el("ul", {class:"plain"}, rows.map(f => { const c = claim(d,f); return el("li", {}, el("strong", {text:LABEL[f] + ": "}), STATE_TEXT[c.s] || c.s, ". ", c.s === "blocked" ? (d.website_note || "The source refused the request.") : NOT_FOUND_WHY[f], refs(d, c.e)); })));
+  // Cite the source that was checked: the claim's own evidence, else the synthesis unknown's checked-source evidence.
+  const checked = f => { const u = ((d.syn || {}).unknowns || []).find(x => x.field === f); return u ? u.evidence_ids : []; };
+  box.append(el("ul", {class:"plain"}, rows.map(f => { const c = claim(d,f); return el("li", {}, el("strong", {text:LABEL[f] + ": "}), STATE_TEXT[c.s] || c.s, ". ", c.s === "blocked" ? (d.website_note || "The source refused the request.") : NOT_FOUND_WHY[f], refs(d, (c.e || []).length ? c.e : checked(f))); })));
   return box;
 }
 function factsTable(d){

@@ -95,3 +95,38 @@ class Synthesis(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConclusionAndUnknownSources(unittest.TestCase):
+    def with_evidence(self, env, ids=("ev-registry_live", "ev-financials", "ev-roles", "ev-fp-dated_activity-9")):
+        env["evidence"] = [{"id": i} for i in ids]
+        return env
+
+    def test_conclusion_restates_exact_figures_and_cites_evidence(self):
+        s = build_synthesis(self.with_evidence(envelope()))
+        self.assertTrue(s["conclusion"].startswith("EKSEMPEL AS (985589003) is a private limited company (AS) in OSLO"))
+        self.assertIn("an annual loss of NOK 20 thousand", s["conclusion"])
+        self.assertIn("revenue +50% from 2024", s["conclusion"])
+        first = s["statements"][0]
+        self.assertEqual(first["topic"], "conclusion")
+        self.assertTrue(first["evidence_ids"])
+
+    def test_unknowns_cite_only_evidence_present_in_the_envelope(self):
+        env = self.with_evidence(envelope())
+        s = build_synthesis(env)
+        known = {e["id"] for e in env["evidence"]}
+        by = {u["field"]: u for u in s["unknowns"]}
+        self.assertEqual(by["employees"]["evidence_ids"], ["ev-registry_live"])
+        self.assertEqual(by["ceo"]["evidence_ids"], ["ev-roles"])
+        for u in s["unknowns"]:
+            self.assertTrue(u["evidence_ids"], u)
+            self.assertTrue(set(u["evidence_ids"]) <= known, u)
+
+    def test_negative_base_year_gives_amounts_not_a_percentage(self):
+        env = envelope()
+        acc = next(c for c in env["claims"] if c["field"] == "annual_accounts")["value"]["records"]
+        acc[0]["revenue"] = -100_000.0
+        s = build_synthesis(self.with_evidence(env))
+        trend = " ".join(x["text"] for x in s["statements"] if x["topic"] == "trend")
+        self.assertIn("Change 2024 to 2025: from -NOK 100 thousand to NOK 1.5 million.", trend)
+        self.assertNotIn("revenue_growth", {x["signal"] for x in s["signals"]})

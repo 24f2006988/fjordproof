@@ -168,7 +168,9 @@ def main() -> None:
         from build_site import build as build_site
         site = out / "site" / "index.html"
         site.parent.mkdir(parents=True, exist_ok=True)
-        site.write_text(build_site(envelopes), encoding="utf-8")
+        html = build_site(envelopes)
+        site.write_text(html, encoding="utf-8")
+        (out / "index.html").write_text(html, encoding="utf-8")  # same page at the top of the output folder, easy to find
     except Exception as exc:  # noqa: BLE001
         print(f"profile viewer not built: {type(exc).__name__}", file=sys.stderr)
     states = {}

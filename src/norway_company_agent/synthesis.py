@@ -31,6 +31,20 @@ UNKNOWN_FIELDS = {
     "group_structure": ("Group", "the registry lists no group (konsern) relation"),
 }
 
+# The checked source behind each unknown, in order of preference; only evidence records present in the envelope are cited.
+# Site-derived fields fall back to the registry record, which is where "no registered or verified website" was checked.
+UNKNOWN_SOURCES = {
+    "employees": ("ev-registry_live", "ev-registry"),
+    "revenue": ("ev-financials-latest", "ev-financials"),
+    "ceo": ("ev-roles",),
+    "auditor": ("ev-roles", "ev-registry_live"),
+    "official_website": ("ev-website", "ev-registry_live", "ev-registry"),
+    "news_items": ("ev-website", "ev-registry_live"),
+    "job_postings": ("ev-website", "ev-registry_live"),
+    "social_profiles": ("ev-website", "ev-registry_live"),
+    "group_structure": ("ev-group", "ev-registry_live"),
+}
+
 
 LEGAL_FORMS = {
     "AS": "private limited company (AS)", "ASA": "public limited company (ASA)", "ENK": "sole proprietorship (ENK)",
@@ -59,7 +73,12 @@ def _nok(value: float | None) -> str:
 
 
 def _pct(new: float, old: float) -> str:
-    return f"{(new - old) / abs(old) * 100:+.0f}%"
+    return f"{(new - old) / old * 100:+.0f}%"
+
+
+def _change(new: float, old: float | None) -> str:
+    """Percentage only from a positive base; otherwise the two amounts, so a sign flip is never misread."""
+    return _pct(new, old) if old and old > 0 else f"from {_nok(old)} to {_nok(new)}"
 
 
 def _name(value: Any) -> str:
@@ -124,6 +143,8 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     source_changes: list[str] = []  # changes visible inside the sources themselves (year on year)
     assessment: list[str] = []
     period = ""
+    fin_summary = ""  # exact figures for the overall conclusion
+    revenue_change = ""
     if acc:
         last = acc[-1]
         lp = last.get("period") or {}
@@ -140,6 +161,17 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
                 f"figures only up to {period}; the {period} figures are therefore not the newest filing.", "latest_accounts_year")
             flag("newer_filing_pending", f"Accounts for {submitted['value']} are registered as submitted; their figures were not yet available.", "latest_accounts_year")
         res, eq, assets = last.get("annual_result"), last.get("equity"), last.get("assets")
+        fin_bits = []
+        if last.get("revenue") is not None:
+            fin_bits.append(f"revenue {_nok(last.get('revenue'))}")
+        if res is not None:
+            fin_bits.append(f"an annual {'loss' if res < 0 else 'profit'} of {_nok(abs(res))}")
+        if eq is not None and eq < 0:
+            fin_bits.append(f"negative equity ({_nok(eq)})")
+        elif eq is not None and assets:
+            fin_bits.append(f"equity of {eq / assets * 100:.0f}% of total assets ({_nok(eq)} of {_nok(assets)})")
+        if fin_bits:
+            fin_summary = f"Its newest filed {scope}, for {period}, show " + ", ".join(fin_bits)
         if res is not None:
             assessment.append(f"annual {'loss' if res < 0 else 'profit'} {_nok(abs(res))} in {period}")
             if res < 0:
@@ -162,18 +194,17 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
             r0, r1 = prev.get("revenue"), last.get("revenue")
             if r1 is not None and any(r.get("revenue") is not None for r in acc[:-1]):
                 text = f"Revenue by year: {series}."
-                if r0:
-                    text += f" Change {pyear} to {period}: {_pct(r1, r0)}."
-                    source_changes.append(f"revenue {_pct(r1, r0)} from {pyear} to {period}")
-                    if r1 >= r0 * 1.2:
+                if r0 is not None:
+                    text += f" Change {pyear} to {period}: {_change(r1, r0)}."
+                    source_changes.append(f"revenue {_change(r1, r0)} from {pyear} to {period}")
+                    revenue_change = f"revenue {_change(r1, r0)} from {pyear}"
+                    if r0 > 0 and r1 >= r0 * 1.2:
                         flag("revenue_growth", f"Revenue grew {_pct(r1, r0)} from {pyear} to {period}.", "annual_accounts")
-                        assessment.append(f"revenue {_pct(r1, r0)} year on year")
-                    elif r1 <= r0 * 0.8:
+                    elif r0 > 0 and r1 <= r0 * 0.8:
                         flag("revenue_decline", f"Revenue fell {_pct(r1, r0)} from {pyear} to {period}.", "annual_accounts")
+                    if r0 > 0:
                         assessment.append(f"revenue {_pct(r1, r0)} year on year")
-                    else:
-                        assessment.append(f"revenue {_pct(r1, r0)} year on year")
-                if len(acc) > 2 and first.get("revenue") and r1 is not None:
+                if len(acc) > 2 and (first.get("revenue") or 0) > 0 and r1 is not None:
                     text += f" Over {years[0]} to {period}: {_pct(r1, first['revenue'])}."
                 say("trend", text, "annual_accounts")
             a0, a1 = prev.get("annual_result"), last.get("annual_result")
@@ -202,6 +233,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         say("leadership", "Registered roles: " + ", ".join(people) + ".", "ceo", "board_chair", "auditor", "audit_exemption")
     # Role registrations changed in the two years before this run (Brreg's per-role last-changed date).
     run_day = str(envelope.get("completed_at") or envelope.get("started_at") or "")[:10]
+    recent: list[dict[str, Any]] = []
     if len(run_day) == 10 and run_day[:4].isdigit():
         cutoff = f"{int(run_day[:4]) - 2}{run_day[4:]}"
         recent = sorted((r for r in ((val("roles") or {}).get("roles") or [])
@@ -240,7 +272,8 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         say("hiring", f"{len(jobs)} open job posting{'s' if len(jobs) != 1 else ''} on the company site, e.g. \"{jobs[0]['title']}\".", "job_postings")
         flag("hiring", "The company advertises open positions.", "job_postings")
 
-    # Unknowns, each with a reason
+    # Unknowns, each with a reason and the evidence of the source that was checked
+    known_ev = {e.get("id") for e in envelope.get("evidence", [])}
     unknowns = []
     for field, (label, why) in UNKNOWN_FIELDS.items():
         c = claims.get(field)
@@ -248,9 +281,19 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
             continue
         state = c.get("availability")
         reason = why if state == "not_available" else UNKNOWN_WHY.get(state, state)
+        sources = [i for i in c.get("evidence_ids") or [] if i in known_ev]
+        if not sources:
+            sources = [next(i for i in UNKNOWN_SOURCES.get(field, ()) + ("",) if not i or i in known_ev)]
         if field == "auditor" and state == "not_available" and val("audit_exemption"):
             reason = f"the company has opted out of audit (decision dated {val('audit_exemption')})"
-        unknowns.append({"field": field, "label": label, "availability": state, "reason": reason})
+            sources = list(dict.fromkeys(sources + ev("audit_exemption")))
+        unknowns.append({"field": field, "label": label, "availability": state, "reason": reason,
+                         "evidence_ids": [i for i in sources if i]})
+    unknown_ev = list(dict.fromkeys(i for u in unknowns for i in u["evidence_ids"]))
+    if unknowns and unknown_ev:
+        statements.append({"topic": "unknowns", "text": "Not established from the checked sources: "
+                           + "; ".join(f"{u['label'].lower()} ({u['reason']})" for u in unknowns) + ".",
+                           "evidence_ids": unknown_ev})
 
     changes = envelope.get("changes") or []
     in_sources = ("Changes visible in the sources (filed accounts, role register): " + "; ".join(source_changes) + ".") if source_changes else ""
@@ -276,6 +319,43 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         say("assessment", "Assessment (rule-based, from the facts above): " + "; ".join(assessment) + ".",
             "annual_accounts", "total_equity", "total_assets", "insolvency_status", "official_website", "news_items", "job_postings")
 
+    # Overall conclusion: one paragraph across the company, restating only exact cited figures (no judgement words).
+    conclusion = ""
+    if name:
+        status = val("insolvency_status") or {}
+        state = ("is registered as bankrupt" if status.get("bankrupt") else "is under liquidation" if status.get("liquidating")
+                 else "has no bankruptcy or liquidation registered")
+        label = industry.get("label") if industry else None
+        parts = [f"{name} ({org}) is {_form(form)}{' in ' + mun if mun else ''}"
+                 + (f", registered for {label.lower()} (NACE {industry.get('code')})" if label else "")
+                 + (f" since {str(founded)[:4]}" if founded else "") + f", and {state}."]
+        if fin_summary:
+            parts.append(fin_summary + (f"; {revenue_change}" if revenue_change else "") + ".")
+        elif (claims.get("annual_accounts") or {}).get("availability") == "not_available":
+            parts.append("No filed annual accounts were found in the public accounts register.")
+        if emp is not None:
+            parts.append(f"The registry reports {emp} employee{'s' if emp != 1 else ''}.")
+        active = [r for r in ((val("roles") or {}).get("roles") or []) if not r.get("inactive")]
+        if active:
+            parts.append(f"The role register lists {len(active)} current role{'s' if len(active) != 1 else ''}"
+                         + (f", most recently changed on {recent[0].get('last_changed')}" if recent else "") + ".")
+        if site:
+            web = f"A company-owned website is verified ({site})"
+            if news:
+                web += f", with dated news up to {news[0]['published_date']}"
+            if jobs:
+                web += f" and {len(jobs)} open job posting{'s' if len(jobs) != 1 else ''}"
+            parts.append(web + ".")
+        else:
+            parts.append("No company-owned website could be verified, so no website, social, news or job facts are published.")
+        if unknowns:
+            parts.append("Not established: " + ", ".join(u["label"].lower() for u in unknowns) + ".")
+        conclusion = " ".join(parts)
+        statements.insert(0, {"topic": "conclusion", "text": conclusion, "evidence_ids": list(dict.fromkeys(
+            ev("name", "legal_form", "municipality", "industry", "incorporation_date", "insolvency_status", "annual_accounts",
+               "employees", "roles", "official_website", "news_items", "job_postings")
+            + [i for u in unknowns for i in u["evidence_ids"]]))})
+
     if name:
         what = f"{industry.get('label').lower()}" if industry and industry.get("label") else "registered entity"
         since = f" since {str(founded)[:4]}" if founded else ""
@@ -286,6 +366,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         headline = statements[0]["text"] if statements else f"Organisation number {org}: no registry record could be read."
     return {
         "headline": headline,
+        "conclusion": conclusion,
         "statements": statements,
         "signals": signals,
         "unknowns": unknowns,
