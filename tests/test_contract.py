@@ -197,6 +197,57 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertIn('aar = ["2024", "2025"]', ev[filings["evidence_ids"][0]]["claim_span"])
         self.assertTrue(ev[filings["evidence_ids"][0]]["source_url"].endswith(f"/kopi/{org}/aar"))
 
+    def test_atomic_claims_one_per_fact_with_own_span(self):
+        org = "123456789"
+        site_sha = "a" * 64
+        profile = {
+            "organisation_number": org, "name": "Eksempel AS", "legal_form": "AS", "employees": None,
+            "bankrupt": False, "liquidating": False, "municipality": "OSLO", "industry_code": "62.010", "industry_label": "Programmering",
+            "evidence": {
+                "registry_live": evidence("registry_live", "available", "official_registry_live", f"https://data.brreg.no/enhetsregisteret/api/enheter/{org}", value={"a": 1}),
+                "roles": evidence("roles", "available", "official_roles", f"https://data.brreg.no/enhetsregisteret/api/enheter/{org}/roller",
+                                  value={"roles": [{"name": "Ola Nordmann", "role_code": "DAGL", "role": "Daglig leder"},
+                                                   {"name": "Ola Nordmann", "role_code": "DAGL", "role": "Daglig leder"},
+                                                   {"name": "Kari Nordmann", "role_code": "LEDE", "role": "Styrets leder"},
+                                                   {"name": "Gammel Leder", "role_code": "MEDL", "inactive": True},
+                                                   {"name": ["REGNSKAP AS"], "role_code": "REGN", "role": "Regnskapsfører"}]}),
+                "locations": evidence("locations", "available", "official_subunits", f"https://data.brreg.no/enhetsregisteret/api/underenheter?overordnetEnhet={org}",
+                                      value={"locations": [{"organisation_number": "987654321", "name": "Eksempel Avd", "address": {"adresse": ["Storgata 1"], "postnummer": "0182", "poststed": "OSLO"}}]}),
+                "financial_history": evidence("financial_history", "available", "official_annual_accounts", f"https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/{org}/aar",
+                                              value={"years": ["2025", "2024"], "pdfs": [{"year": "2025", "url": f"https://x/kopi/{org}/2025"}, {"year": "2024", "url": f"https://x/kopi/{org}/2024"}]}),
+                "website": evidence("website", "available", "discovered_company_website", "https://eksempel.no/",
+                                    value={"title": "Eksempel", "identity_assessment": {"publishable": True, "score": 1.0}}),
+                "external_footprint": evidence("external_footprint", "available", "company_owned_site", "https://eksempel.no/",
+                                               value={"social_links": [{"platform": "facebook", "url": "https://facebook.com/eksempel"},
+                                                                       {"platform": "instagram", "url": "https://instagram.com/uten-kilde"}],
+                                                      "item_sources": {"social_links": [{"item": "https://facebook.com/eksempel", "source_url": "https://eksempel.no/",
+                                                                                         "sha256": site_sha, "span": "https://www.facebook.com/eksempel"}]}}),
+            },
+            "run_metrics": {"requests": 6, "latencies_ms": [10]},
+        }
+        env = terminal_envelope(profile, run_id="t", modules=list(profile["evidence"]), started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z")
+        env = to_contract(env)
+        ev = {e["id"]: e for e in env["evidence"]}
+        by = lambda f: [c for c in env["claims"] if c["field"] == f]
+        roles = by("role")
+        # Duplicates and inactive roles are dropped; organisation holders are plain names.
+        self.assertEqual([(r["value"]["name"], r["value"]["role_code"]) for r in roles],
+                         [("Ola Nordmann", "DAGL"), ("Kari Nordmann", "LEDE"), ("REGNSKAP AS", "REGN")])
+        self.assertIn("Kari Nordmann", ev[roles[1]["evidence_ids"][0]]["claim_span"])
+        self.assertEqual(len(by("workplace")), 1)
+        self.assertIn("987654321 Eksempel Avd, Storgata 1 0182 OSLO", ev[by("workplace")[0]["evidence_ids"][0]]["claim_span"])
+        self.assertEqual([c["period"]["accounts_year"] for c in by("annual_account_filing")], ["2025", "2024"])
+        # A social link is published as its own claim only when its page and span are on record.
+        socials = by("social_profile")
+        self.assertEqual([s["value"]["url"] for s in socials], ["https://facebook.com/eksempel"])
+        self.assertEqual(ev[socials[0]["evidence_ids"][0]]["content_sha256"], site_sha)
+        for c in env["claims"]:
+            if c["availability"] == "available":
+                self.assertTrue(c["evidence_ids"] and set(c["evidence_ids"]) <= set(ev))
+        # The list claims the viewer and synthesis read are still there.
+        self.assertEqual(len(by("roles")), 1)
+        self.assertEqual(len(by("social_profiles")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

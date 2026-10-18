@@ -451,6 +451,53 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    # Atomic claims: one claim per individual fact (role, sub-unit, filing, social profile, article, job), each citing
+    # its own span. Added next to the list claims above, which stay unchanged for the viewer and synthesis.
+    def atomic(field: str, value: Any, ev_ids: list[str], conf: float, **extra: Any) -> None:
+        if ev_ids:
+            claims.append({"field": field, "value": value, "availability": "available", "confidence": conf, "evidence_ids": ev_ids, **extra})
+
+    def fp_item_evidence(sk: str, item: str) -> list[str]:
+        """Evidence for one footprint item: the page that contains it and the literal span found there."""
+        for it in item_sources.get(sk, []):
+            if it.get("item") == item:
+                eid = f"ev-fp-{sk}-item-{len(evidence)}"
+                evidence.append({"id": eid, "source_url": it["source_url"], "source_class": "company_owned_site",
+                                 "retrieved_at": fp_rec.get("retrieved_at"), "content_sha256": it["sha256"], "claim_span": str(it["span"])[:240]})
+                return [eid]
+        return []
+
+    if roles_ok:
+        seen_roles = set()
+        for r in roles_list:
+            holder = r.get("name") or r.get("organisation_number")
+            key = (holder if isinstance(holder, str) else _lit(holder), r.get("role_code"))
+            if r.get("inactive") or not holder or key in seen_roles:
+                continue
+            seen_roles.add(key)
+            span = f"Brreg roller {org}: {r.get('role') or r.get('role_code')} ({r.get('role_code')}) = {_lit(holder)}, last changed {r.get('last_changed')}"
+            atomic("role", {"name": " ".join(holder) if isinstance(holder, list) else holder, "role_code": r.get("role_code"), "role": r.get("role"), "last_changed": r.get("last_changed")},
+                   cite("roles", f"role-{len(seen_roles)}", span), 0.99)
+    if loc_ok:
+        for i, w in enumerate(workplaces, 1):
+            a = w.get("address") or {}
+            span = (f"Brreg underenheter {org}: {w.get('organisation_number')} {w.get('name')}, "
+                    f"{' '.join(a.get('adresse') or [])} {a.get('postnummer') or ''} {a.get('poststed') or ''}").strip()
+            atomic("workplace", w, cite("locations", f"workplace-{i}", span), 0.99)
+    if fh_present:
+        for f in filings:
+            atomic("annual_account_filing", f, cite("financial_history", f"filing-{f.get('year')}",
+                                                    f"Brreg Regnskapsregisteret annual-account copy {f.get('year')}: {f.get('url')}"),
+                   0.99, period={"accounts_year": f.get("year")})
+    if fp_ok:
+        for s in fp_val.get("social_links") or []:
+            atomic("social_profile", s, fp_item_evidence("social_links", s.get("url")), 0.80)
+        for n in news:
+            atomic("news_item", n, fp_item_evidence("dated_activity", n["url"]), 0.85)
+        for j in jobs_val:
+            if isinstance(j, dict) and j.get("title"):
+                atomic("job_posting", j, fp_item_evidence("job_postings", j["title"]), 0.80)
+
     known = {e["id"] for e in evidence}
     for claim in claims:
         claim["evidence_ids"] = [i for i in claim["evidence_ids"] if i in known]
