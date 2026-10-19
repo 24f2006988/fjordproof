@@ -120,3 +120,12 @@ def test_observations_follow_starter_schema():
     obs = env["external_observations"]
     assert {(o["platform"], o["signal_type"]) for o in obs} == {("job_board", "job_posting"), ("brreg", "workforce_snapshot")}
     assert all(validate_observation(o) == [] for o in obs)
+
+
+def test_homepage_candidates_skip_recruitment_platforms():
+    from norway_company_agent.nav_jobs import homepage_hosts
+
+    jobs = [{"employer_homepage": u} for u in ("https://lifenorge.teamtailor.com", "https://karriere.norceresearch.no/x",
+                                                 "http://www.bs-graveservice.no", "https://ansettr.no/", None)]
+    pr = {"evidence": {"nav_jobs": {"status": "available", "value": {"job_postings": jobs}}}}
+    assert homepage_hosts(pr) == ["norceresearch.no", "bs-graveservice.no"]

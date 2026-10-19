@@ -190,6 +190,22 @@ def main() -> None:
         budget.record_requests(used)
         profile["run_metrics"]["workforce_requests"] = used
 
+    def jobs(profile: dict) -> None:
+        if budget.is_exhausted(safety_margin_seconds=240.0, safety_margin_requests=100):
+            profile["evidence"]["nav_jobs"] = evidence("nav_jobs", "budget_exhausted", "system_budget_guard", "https://builderr.ai",
+                                                       note="Budget guard active; NAV job feed not matched")
+            return
+        try:
+            profile["evidence"]["nav_jobs"] = fetch_jobs(profile, feed)
+        except Exception as exc:  # noqa: BLE001  never drop a company
+            profile["evidence"]["nav_jobs"] = evidence("nav_jobs", "source_error", "official_job_feed", "https://pam-stilling-feed.nav.no",
+                                                       note=type(exc).__name__)
+
+    # NAV ads first: their employer homepages become website candidates for discovery below.
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(jobs, profiles))
+    budget.record_requests(feed.requests)
+    report["job_feed"] = {"active_ads": len(feed.ads), "requests": feed.requests, "error": feed.error, "days": a.job_feed_days}
     retry: set[str] = set()
     with ThreadPoolExecutor(a.plus_workers) as pool:
         profiles = list(pool.map(plus, profiles))
@@ -204,21 +220,6 @@ def main() -> None:
     report["footprint_retries"] = len(fp_retry)
     for pr in profiles:
         pr.setdefault("run_metrics", {})
-    def jobs(profile: dict) -> None:
-        if budget.is_exhausted(safety_margin_seconds=240.0, safety_margin_requests=100):
-            profile["evidence"]["nav_jobs"] = evidence("nav_jobs", "budget_exhausted", "system_budget_guard", "https://builderr.ai",
-                                                       note="Budget guard active; NAV job feed not matched")
-            return
-        try:
-            profile["evidence"]["nav_jobs"] = fetch_jobs(profile, feed)
-        except Exception as exc:  # noqa: BLE001  never drop a company
-            profile["evidence"]["nav_jobs"] = evidence("nav_jobs", "source_error", "official_job_feed", "https://pam-stilling-feed.nav.no",
-                                                       note=type(exc).__name__)
-
-    with ThreadPoolExecutor(8) as pool:
-        list(pool.map(jobs, profiles))
-    budget.record_requests(feed.requests)
-    report["job_feed"] = {"active_ads": len(feed.ads), "requests": feed.requests, "error": feed.error, "days": a.job_feed_days}
     with ThreadPoolExecutor(a.ocr_workers) as pool:
         list(pool.map(workforce, profiles))
     completed = utc_now()

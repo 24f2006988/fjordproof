@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from .evidence import evidence, utc_now
 from .google_search import google_candidate_hosts
 from .identity import LEGAL_AND_GENERIC, _tokens, apply_website_identity_gate, assess_social_identity
+from .nav_jobs import homepage_hosts
 from .website import (
     SAFE_OPENER,
     USER_AGENT,
@@ -141,6 +142,10 @@ def _slug_variants(text: str) -> set[str]:
     return {v for v in (v1, v2, v3) if 3 <= len(v) <= 40}
 
 
+
+# Candidate sources named by a third party (registry e-mail, NAV ad): address-only proof is never enough.
+STRICT_METHODS = {"registry_email_domain", "job_feed_homepage"}
+
 def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     """(host, method) pairs, best first. Method decides how strict the identity gate must be."""
     out: list[tuple[str, str]] = []
@@ -186,6 +191,10 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
                         slug_local[i : i + 4] in joined_toks for i in range(len(slug_local) - 3)
                     ):
                         freemail_locals.append(slug_local)
+
+    # 1b. Homepages the employer itself names in NAV job ads tied to this company's organisation number
+    for nav_host in homepage_hosts(profile):
+        out.append((nav_host, "job_feed_homepage"))
 
     # 2a. Google Search / Places candidates (once per company per run; off unless env keys set)
     g_cached: list[str] | None = None
@@ -325,7 +334,7 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     for host, method in out:
         if host not in seen:
             seen.add(host)
-            if method in {"registry_email_domain", "google_search_candidate", "brave_search_candidate"} or host.endswith(".no"):
+            if method in {"registry_email_domain", "job_feed_homepage", "google_search_candidate", "brave_search_candidate"} or host.endswith(".no"):
                 no_hosts.append((host, method))
             else:
                 other_hosts.append((host, method))
@@ -392,7 +401,7 @@ def _accept_proof(
             reasons = assessment.get("reasons") or []
             if "all normalized legal-name tokens appear together in homepage identity evidence" not in reasons:
                 return False
-    return method != "registry_email_domain" and assessment.get("score", 0) >= 0.85
+    return method not in STRICT_METHODS and assessment.get("score", 0) >= 0.85
 
 
 def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout: float = 8.0) -> tuple[dict[str, Any] | None, dict[str, int]]:
@@ -424,7 +433,7 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
             continue
         gated = apply_website_identity_gate(profile, record)
         assessment = gated["assessment"] or {}
-        ok = bool(assessment.get("publishable")) if method == "registry_email_domain" else assessment.get("score") == 1.0
+        ok = bool(assessment.get("publishable")) if method in STRICT_METHODS else assessment.get("score") == 1.0
         if not ok and assessment.get("score", 0) >= 0.3:
             weak = assessment.get("score", 0) < 0.5
             proof, pm = hard_identity_proof(profile, record, WEAK_CANDIDATE_PROOF_PAGES if weak else MAX_PROOF_PAGES, effective_timeout)

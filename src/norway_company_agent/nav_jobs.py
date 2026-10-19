@@ -25,6 +25,12 @@ PUBLIC_AD = "https://arbeidsplassen.nav.no/stillinger/stilling/{uuid}"
 BRREG_SUBUNIT = "https://data.brreg.no/enhetsregisteret/api/underenheter/{org}"
 UA = "builderr-signalpost-poc/0.1 (+https://builderr.ai)"
 MAX_DETAILS_PER_COMPANY = 12
+# Recruitment platforms and recruiters that host or post ads for other employers: never a company's own website.
+ATS_HOSTS = ("teamtailor.com", "jobylon.com", "webcruiter.no", "webcruiter.com", "reachmee.com", "easycruit.com", "hrmanager.no",
+             "hr-manager.net", "recman.no", "smartrecruiters.com", "jobbnorge.no", "finn.no", "ansettr.no", "nav.no", "linkedin.com",
+             "facebook.com", "varbi.com", "emply.com", "simployer.com", "talentech.com", "workday.com", "myworkdayjobs.com",
+             "jobindex.no", "tellent.com", "recruitee.com", "breezy.hr", "lever.co", "greenhouse.io", "cvpartner.com")
+CAREER_PREFIXES = ("jobb.", "jobs.", "karriere.", "career.", "careers.", "rekruttering.", "ledigestillinger.")
 MAX_JOBS_PER_COMPANY = 10
 
 LEGAL_SUFFIX = re.compile(r"\b(ASA|AS|SA|BA|DA|ANS|ENK|NUF|STI|HF|KF|IKS|SF|BRL|AVD|AVDELING)\b")
@@ -183,6 +189,23 @@ class JobFeed:
         return parent
 
 
+def homepage_hosts(profile: dict[str, Any]) -> list[str]:
+    """Website hosts the employer itself names in its NAV ads (career subdomains mapped to the root domain)."""
+    rec = (profile.get("evidence") or {}).get("nav_jobs") or {}
+    hosts: list[str] = []
+    for j in ((rec.get("value") or {}).get("job_postings") or []) if rec.get("status") == "available" else []:
+        url = str(j.get("employer_homepage") or "").strip()
+        host = re.sub(r"^https?://", "", url, flags=re.I).split("/")[0].split(":")[0].lower().removeprefix("www.")
+        if not host or "." not in host or any(host == a or host.endswith("." + a) for a in ATS_HOSTS):
+            continue
+        for prefix in CAREER_PREFIXES:
+            if host.startswith(prefix) and host.count(".") >= 2:
+                host = host[len(prefix):]
+        if host not in hosts:
+            hosts.append(host)
+    return hosts[:3]
+
+
 def _subunits(profile: dict[str, Any]) -> tuple[set[str], list[str], bool]:
     """Own sub-unit numbers and names from the Brreg locations record, and whether that list is complete."""
     rec = (profile.get("evidence") or {}).get("locations") or {}
@@ -238,6 +261,7 @@ def fetch_jobs(profile: dict[str, Any], feed: JobFeed) -> dict[str, Any]:
             "employer_name": employer.get("name"),
             "employer_organisation_number": emp_org,
             "employer_link": link,
+            "employer_homepage": employer.get("homepage") or None,
             "work_location": city or None,
             "source": "NAV arbeidsplassen (pam-stilling-feed)",
             "source_record": f"{FEED}/api/v1/feedentry/{uuid}",
