@@ -473,6 +473,7 @@ PROOF_PATHS = ("/kontakt", "/kontakt-oss", "/om-oss", "/om", "/contact", "/about
 PROOF_LINK_TERMS = ("kontakt", "contact", "om-oss", "omoss", "om oss", "about", "personvern", "privacy", "vilk", "terms", "betingelser",
                     "impressum", "cookie", "fakturering", "selskap", "company")
 MAX_PROOF_PAGES = 4
+MAX_FEED_ITEMS = 20  # dated items kept per site feed; the feed is already downloaded, so more items cost no requests
 WEAK_CANDIDATE_PROOF_PAGES = 2  # name score < 0.5: most such pages are look-alikes, keep the proof cheap
 
 
@@ -941,7 +942,7 @@ def _parse_feed(raw: bytes, base: str) -> list[dict[str, str]]:
                 when = date.text.strip()[:10]
         if title is not None and title.text and href and when:
             items.append({"title": " ".join(title.text.split())[:200], "url": urllib.parse.urljoin(base, href.strip()), "date": when})
-        if len(items) >= 8:
+        if len(items) >= MAX_FEED_ITEMS:
             break
     return items
 
@@ -1472,7 +1473,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     found = bool(careers or activity or contact or news_pages or job_postings or social)
     return evidence(
         "external_footprint", "available" if found else "not_found", "company_owned_site", final or source,
-        value={"careers_urls": careers[:4], "news_pages": news_pages[:3], "dated_activity": activity[:8],
+        value={"careers_urls": careers[:4], "news_pages": news_pages[:3], "dated_activity": activity[:MAX_FEED_ITEMS],
                "contact": contact, "social_links": social,
                "job_postings": job_postings[:6], "item_sources": item_sources},
         note="Extracted only from an identity-verified company-owned website; activity dates come from the site's own feed.",
