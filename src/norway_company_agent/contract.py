@@ -412,14 +412,29 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             "confidence": 0.80 if cpresent else 0.0,
             "evidence_ids": fp_evidence(csk) if cpresent else [],
         })
-    jobs_val = fp_val.get("job_postings") or []
-    jobs_present = fp_ok and bool(jobs_val)
+    # Job postings: structured ads on the verified site, plus NAV ads whose employer number is this company or its sub-unit.
+    site_jobs = (fp_val.get("job_postings") or []) if fp_ok else []
+    nav_rec = records.get("nav_jobs") or {}
+    nav_jobs = ((nav_rec.get("value") or {}).get("job_postings") or []) if nav_rec.get("status") == "available" else []
+
+    def nav_job_evidence(j: dict[str, Any]) -> list[str]:
+        eid = f"ev-nav_jobs-{len(evidence)}"
+        evidence.append({"id": eid, "source_url": j["url"], "source_record": j["source_record"], "source_class": "official_job_feed",
+                         "retrieved_at": j.get("retrieved_at") or nav_rec.get("retrieved_at"), "content_sha256": j["content_sha256"],
+                         "claim_span": j["span"]})
+        return [eid]
+
+    nav_items = [({k: v for k, v in j.items() if k not in {"span", "content_sha256", "retrieved_at", "source_record"}}, nav_job_evidence(j))
+                 for j in nav_jobs if j.get("content_sha256")]
+    jobs_val = site_jobs + [item for item, _ in nav_items]
+    jobs_present = bool(jobs_val)
+    checked = fp_rec.get("status") in {"available", "not_found"} or nav_rec.get("status") in {"available", "not_found"}
     claims.append({
         "field": "job_postings",
         "value": jobs_val if jobs_present else None,
-        "availability": "available" if jobs_present else ("not_available" if fp_rec.get("status") in {"available", "not_found"} else "failed"),
+        "availability": "available" if jobs_present else ("not_available" if checked else "failed"),
         "confidence": 0.80 if jobs_present else 0.0,
-        "evidence_ids": fp_evidence("job_postings") if jobs_present else [],
+        "evidence_ids": ((fp_evidence("job_postings") if site_jobs else []) + [e for _, ids in nav_items for e in ids]) if jobs_present else [],
     })
 
     # Baseline module claims (preserving existing contract compatibility)
@@ -494,9 +509,11 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             atomic("social_profile", s, fp_item_evidence("social_links", s.get("url")), 0.80)
         for n in news:
             atomic("news_item", n, fp_item_evidence("dated_activity", n["url"]), 0.85)
-        for j in jobs_val:
+        for j in site_jobs:
             if isinstance(j, dict) and j.get("title"):
                 atomic("job_posting", j, fp_item_evidence("job_postings", j["title"]), 0.80)
+    for item, ids in nav_items:
+        atomic("job_posting", item, ids, 0.95, period={"published": item.get("published"), "expires": item.get("expires")})
 
     known = {e["id"] for e in evidence}
     for claim in claims:

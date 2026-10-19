@@ -11,6 +11,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -22,9 +24,11 @@ from norway_company_agent.budget import BudgetGuard  # noqa: E402
 from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.footprint_plus import discover_website, extract_footprint  # noqa: E402
+from norway_company_agent.nav_jobs import JobFeed, fetch_jobs  # noqa: E402
 from norway_company_agent.workforce import fetch_workforce  # noqa: E402
 
-MODULES = "registry,accounting_obligation,registry_live,financials,financial_history,roles,group,locations,website,external_footprint,workforce"
+MODULES = "registry,accounting_obligation,registry_live,financials,financial_history,roles,group,locations,website,external_footprint,workforce,nav_jobs"
+PLUS_MODULES = {"external_footprint", "workforce", "nav_jobs"}  # run in this script, after the base pipeline
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -60,17 +64,22 @@ def main() -> None:
     p.add_argument("--plus-workers", type=int, default=24, help="threads for website discovery/footprint (many different hosts; Brreg is not hit here)")
     p.add_argument("--max-runtime-seconds", type=float, default=2400.0, help="maximum wallclock runtime in seconds (default: 2400 = 40m)")
     p.add_argument("--max-requests", type=int, default=None, help="maximum outbound requests (default: batch scaled)")
+    p.add_argument("--job-feed-days", type=int, default=60, help="days of the NAV job feed to read (active ads modified in this window)")
     p.add_argument("--ocr-workers", type=int, default=max(1, min(4, (os.cpu_count() or 2) - 1)), help="threads reading man-years from filed annual-account copies")
     a = p.parse_args()
     out = Path(a.outdir)
     profiles_path, env_path, report_path = out / "profiles.jsonl", out / "envelopes.jsonl", out / "run-report.json"
-    base_modules = ",".join(MODULES.split(",")[:-2])  # website discovery, footprint and workforce run in this script
+    base_modules = ",".join(m for m in MODULES.split(",") if m not in PLUS_MODULES)  # website discovery also runs in this script
     max_reqs = a.max_requests if a.max_requests is not None else max(1800, int(a.expected_count * 15))
     budget = BudgetGuard(max_runtime_seconds=a.max_runtime_seconds, max_requests=max_reqs)
     cmd = [sys.executable, str(ROOT / "scripts" / "run_competition_batch.py"), "--organisations", a.organisations,
            "--profiles-output", str(profiles_path), "--output", str(env_path), "--report", str(report_path),
            "--run-id", a.run_id, "--expected-count", str(a.expected_count), "--workers", str(a.workers), "--modules", base_modules,
            "--max-runtime-seconds", str(budget.remaining_seconds), "--max-requests", str(max_reqs)] + (["--bulk", a.bulk] if a.bulk else [])
+    # One NAV job-feed load per run, paged while the registry pipeline runs; every company is matched against it later.
+    feed = JobFeed(days=a.job_feed_days)
+    feed_deadline = time.monotonic() + max(60.0, budget.remaining_seconds - 600.0)
+    threading.Thread(target=feed.load, kwargs={"deadline": feed_deadline}, daemon=True).start()
     rc = subprocess.run(cmd, stdout=subprocess.DEVNULL).returncode
     if rc != 0:
         raise SystemExit(f"base pipeline failed ({rc})")
@@ -195,6 +204,21 @@ def main() -> None:
     report["footprint_retries"] = len(fp_retry)
     for pr in profiles:
         pr.setdefault("run_metrics", {})
+    def jobs(profile: dict) -> None:
+        if budget.is_exhausted(safety_margin_seconds=240.0, safety_margin_requests=100):
+            profile["evidence"]["nav_jobs"] = evidence("nav_jobs", "budget_exhausted", "system_budget_guard", "https://builderr.ai",
+                                                       note="Budget guard active; NAV job feed not matched")
+            return
+        try:
+            profile["evidence"]["nav_jobs"] = fetch_jobs(profile, feed)
+        except Exception as exc:  # noqa: BLE001  never drop a company
+            profile["evidence"]["nav_jobs"] = evidence("nav_jobs", "source_error", "official_job_feed", "https://pam-stilling-feed.nav.no",
+                                                       note=type(exc).__name__)
+
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(jobs, profiles))
+    budget.record_requests(feed.requests)
+    report["job_feed"] = {"active_ads": len(feed.ads), "requests": feed.requests, "error": feed.error, "days": a.job_feed_days}
     with ThreadPoolExecutor(a.ocr_workers) as pool:
         list(pool.map(workforce, profiles))
     completed = utc_now()
@@ -205,7 +229,7 @@ def main() -> None:
     validation = validate_envelopes(envelopes, a.expected_count)
     plus_requests = sum(pr.get("run_metrics", {}).get("plus_requests", 0) + pr.get("run_metrics", {}).get("workforce_requests", 0) for pr in profiles)
     report.update({"modules": MODULES.split(","), "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})
-    report["operations"]["requests"] += plus_requests
+    report["operations"]["requests"] += plus_requests + feed.requests
     report["operations"]["third_party_cost_usd"] = 0
     report["operations"]["budget_exhausted"] = budget.is_exhausted(safety_margin_seconds=0, safety_margin_requests=0)
 

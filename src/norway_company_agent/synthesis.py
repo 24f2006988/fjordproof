@@ -26,7 +26,7 @@ UNKNOWN_FIELDS = {
     "auditor": ("Auditor", "no auditor is registered (small companies may opt out of audit)"),
     "official_website": ("Website", "no company-owned website could be verified with the exact organisation number or address"),
     "news_items": ("Dated news", "no dated news item with a publication date was found on a verified company site"),
-    "job_postings": ("Job postings", "no structured job posting was found on a verified company site"),
+    "job_postings": ("Job postings", "no open ad names this company in NAV's job feed and no structured job posting was found on a verified company site"),
     "social_profiles": ("Social profiles", "no social profile is linked from a verified company site"),
     "group_structure": ("Group", "the registry lists no group (konsern) relation"),
 }
@@ -40,7 +40,7 @@ UNKNOWN_SOURCES = {
     "auditor": ("ev-roles", "ev-registry_live"),
     "official_website": ("ev-website", "ev-registry_live", "ev-registry"),
     "news_items": ("ev-website", "ev-registry_live"),
-    "job_postings": ("ev-website", "ev-registry_live"),
+    "job_postings": ("ev-nav_jobs", "ev-website", "ev-registry_live"),
     "social_profiles": ("ev-website", "ev-registry_live"),
     "group_structure": ("ev-group", "ev-registry_live"),
 }
@@ -271,7 +271,9 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         flag("recent_news", f"Latest company news is dated {latest['published_date']}.", "news_items")
     jobs = val("job_postings") or []
     if jobs:
-        say("hiring", f"{len(jobs)} open job posting{'s' if len(jobs) != 1 else ''} on the company site, e.g. \"{jobs[0]['title']}\".", "job_postings")
+        nav = [str(j.get("source") or "").startswith("NAV") for j in jobs]
+        where = "in NAV's job feed" if all(nav) else "on the company site and in NAV's job feed" if any(nav) else "on the company site"
+        say("hiring", f"{len(jobs)} open job posting{'s' if len(jobs) != 1 else ''} {where}, e.g. \"{jobs[0]['title']}\".", "job_postings")
         flag("hiring", "The company advertises open positions.", "job_postings")
 
     # Unknowns, each with a reason and the evidence of the source that was checked
