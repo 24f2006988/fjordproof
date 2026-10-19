@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any
 
+from .observations import build_observations
 from .official import ACCOUNT_SCOPE, single_scope_accounts
 from .synthesis import build_synthesis
 
@@ -533,6 +534,10 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         "terminal_status": "completed" if envelope["state"] == "complete" else "failed",
     }
     envelope["claims"] = claims
+    # The same external facts in the starter kit's observation schema (platform / signal_type / identity proof).
+    envelope["external_observations"] = build_observations(
+        org, records, web_ok=web_ok, fp_ok=fp_ok, news=news if fp_ok else [], site_jobs=site_jobs, nav_jobs=nav_jobs,
+        wf_present=wf_present, employees=profile.get("employees"), employees_ok=ident_ok)
     envelope["evidence"] = evidence
     envelope["errors"] = errors
     envelope["operations"] = {

@@ -104,3 +104,19 @@ def test_contract_claims_cite_each_nav_ad():
         e = ev[c["evidence_ids"][0]]
         assert e["source_class"] == "official_job_feed" and e["source_url"].startswith("https://arbeidsplassen.nav.no/")
         assert "span" not in c["value"] and e["claim_span"].startswith("NAV feedentry")
+
+
+def test_observations_follow_starter_schema():
+    from norway_company_agent.external_footprint import validate_observation
+
+    feed = FakeFeed([ad("u1", "JAG Assistanse AS")], {"u1": detail("u1", SUB)})
+    pr = profile()
+    pr["employees"] = 12
+    pr["evidence"]["nav_jobs"] = fetch_jobs(pr, feed)
+    pr["evidence"]["registry_live"] = evidence("registry_live", "available", "official_registry", "https://data.brreg.no/enhetsregisteret/api/enheter/" + ORG,
+                                               value={}, content_sha256="b" * 64)
+    env = terminal_envelope(pr, run_id="t", modules=["locations", "nav_jobs", "registry_live"], started_at="s", completed_at="c")
+    to_contract(env)
+    obs = env["external_observations"]
+    assert {(o["platform"], o["signal_type"]) for o in obs} == {("job_board", "job_posting"), ("brreg", "workforce_snapshot")}
+    assert all(validate_observation(o) == [] for o in obs)
