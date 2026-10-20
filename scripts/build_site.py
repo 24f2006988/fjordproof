@@ -24,7 +24,8 @@ def slim(envelope: dict) -> dict:
         "state": envelope.get("state"),
         "modules": {k: (v or {}).get("state") for k, v in (envelope.get("modules") or {}).items()},
         "claims": [
-            {"f": c.get("field"), "v": c.get("value"), "s": c.get("availability"), "c": c.get("confidence"), "e": c.get("evidence_ids") or []}
+            {"f": c.get("field"), "v": c.get("value"), "s": c.get("availability"), "c": c.get("confidence"), "e": c.get("evidence_ids") or [],
+             **({"m": f"{c['metric']} {c.get('accounts_year') or ''}".strip()} if c.get("metric") else {})}
             for c in envelope.get("claims") or []
         ],
         "evidence": [{k: e.get(k) for k in KEEP_ENV} for e in envelope.get("evidence") or []],
@@ -132,6 +133,7 @@ summary{cursor:pointer;min-height:32px}
 .sr{position:absolute;left:-9999px}
 ul.plain{margin:0;padding-left:18px}
 .empty{color:var(--muted);font-style:italic}
+.glance{margin:0}.glance dt{font-weight:600;margin-top:12px}.glance dd{margin:4px 0 0}
 </style>
 </head>
 <body>
@@ -249,6 +251,8 @@ function compareView(){
     ["Current roles", d=>activeRoles(d).length || "None listed"],["Sub-units", d=>(val(d,"locations")?.locations||[]).length || "None"],["Website", d=>val(d,"official_website") ?? "Not verified"],["Dated activity items", d=>activity(d).length || "None found"],["Fields found", d=>found(d) + " / " + FIELDS.length]];
   return el("div", {}, el("a", {class:"back", href:"#/", text:"← All companies"}), el("div", {class:"panel"}, el("h2", {text:"Side-by-side comparison"}), cmpPicker(), ds.length < 2 ? el("p", {class:"empty", text:ds.length ? "Add at least one more company to compare." : "Add two to four companies above, or tick “Compare” on the company list."}) :
     el("div", {class:"tablewrap"}, el("table", {class:"cmptable"}, el("thead", {}, el("tr", {}, el("th", {text:""}), ds.map(d => el("th", {}, el("a", {href:"#/" + d.org, text:d.name}), " ", el("button", {class:"btn sec", type:"button", "aria-label":"Remove " + d.name + " from the comparison", text:"Remove", onclick:() => { st.cmp.delete(d.org); location.hash = cmpHash(); }}))))), el("tbody", {}, rows.map(([l,fn]) => el("tr", {}, el("th", {scope:"row", text:l}), ds.map(d => el("td", {class:typeof fn(d) === "string" && /^[\d\s\u00a0−-]+$/.test(fn(d)) ? "num" : "", text:String(fn(d))})))))))),
+    ds.length >= 2 ? el("div", {class:"tools"}, el("button", {class:"btn sec", type:"button", text:"Download comparison (CSV)", onclick:() => download("comparison-" + ds.map(d => d.org).join("-") + ".csv",
+      [["", ...ds.map(d => d.name)].map(csvCell).join(",")].concat(rows.map(([l,fn]) => [l, ...ds.map(d => fn(d))].map(csvCell).join(","))).join("\n"), "text/csv")})) : null,
     el("p", {class:"meta", text:"Figures are taken from each company's profile; open a profile to see the source and date for every value."}));
 }
 
@@ -269,7 +273,8 @@ function summary(d){
   if (l) add("Newest figures in the accounts register, " + (l.account_type === "KONSERN" ? "group accounts (KONSERN)" : l.account_type === "SELSKAP" ? "company accounts (SELSKAP)" : "accounts") + " (" + (l.period?.fraDato||"?") + " to " + (l.period?.tilDato||"?") + "): revenue " + money(l.revenue) + " " + l.currency + ", operating result " + money(l.operating_result) + ", annual result " + money(l.annual_result) + ", equity " + money(l.equity) + ".", refs(d, claim(d,"annual_accounts")?.e), a.length > 1 ? " " + a.length + " years of accounts are listed below." : "");
   else add("No annual accounts were found in the public accounts register.", refs(d, claim(d,"annual_accounts")?.e));
   const emp = val(d,"employees");
-  add(emp != null ? "The registry reports " + emp + " employees." : "The registry reports no employee count, so none is stated.", refs(d, claim(d,"employees")?.e));
+  const fte = val(d,"workforce_fte");
+  add(emp != null ? "The registry reports " + emp + " employees." : fte != null ? "The registry reports no employee count; the filed annual accounts state " + fte + " man-years." : "The registry reports no employee count, so none is stated.", refs(d, (emp == null && fte != null ? claim(d,"workforce_fte") : claim(d,"employees"))?.e));
   const r = activeRoles(d); if (r.length) add(r.length + " current roles are registered, for example " + r.slice(0,2).map(x => (Array.isArray(x.name) ? x.name.join(" ") : x.name) + " (" + x.role + ")").join(" and ") + ".", refs(d, claim(d,"roles")?.e));
   const site = val(d,"official_website");
   const wc = claim(d,"official_website"); const weak = site && wc.c != null && wc.c < 0.9;
@@ -279,6 +284,26 @@ function summary(d){
   if ((syn.signals || []).length) p.append(el("p", {}, el("strong", {text:"Signals: "}), syn.signals.map((x, i) => el("span", {}, i ? "; " : "", x.text, refs(d, x.evidence_ids)))));
   const ch = d.changes; add(syn.changes || (ch.length ? ch.length + " changes since the previous run (listed below)." : "No earlier snapshot to compare with, so this run is the baseline. Later runs list any changes here and keep the earlier evidence."));
   return p;
+}
+/* The brief's five questions, answered by the envelope's synthesis; each answer links to the evidence it rests on. */
+function sectionsPanel(d){
+  const secs = (d.syn || {}).sections || [];
+  if (!secs.length) return null;
+  return el("div", {class:"panel"}, el("h2", {text:"At a glance"}), el("dl", {class:"glance"}, secs.flatMap(s => [
+    el("dt", {}, s.label, s.answered ? null : el("span", {class:"state not_available", text:" not established"})),
+    el("dd", {}, s.text, refs(d, s.evidence_ids))])));
+}
+/* Download what is on screen, so a reviewer can check it outside the page. */
+function download(name, text, type){
+  const a = el("a", {href:URL.createObjectURL(new Blob([text], {type})), download:name}); document.body.append(a); a.click(); a.remove();
+}
+function csvCell(v){ const s = String(v ?? ""); return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+function exportProfile(d){
+  return el("div", {class:"tools"},
+    el("button", {class:"btn sec", type:"button", text:"Download facts (CSV)", onclick:() => download(d.org + "-facts.csv",
+      [["field","value","state","confidence","source","retrieved"].join(",")].concat(d.claims.map(c => { const ev = d.evidence.find(e => e.id === (c.e||[])[0]);
+        return [c.f + (c.m ? " (" + c.m + ")" : ""), typeof c.v === "object" && c.v !== null ? JSON.stringify(c.v) : c.v, c.s, c.c, ev ? ev.source_url : "", ev ? ev.retrieved_at : ""].map(csvCell).join(","); })).join("\n"), "text/csv")}),
+    el("button", {class:"btn sec", type:"button", text:"Download profile (JSON)", onclick:() => download(d.org + ".json", JSON.stringify(d, null, 2), "application/json")}));
 }
 function unknowns(d){
   const rows = FIELDS.filter(f => claim(d,f) && claim(d,f).s !== "available");
@@ -353,7 +378,7 @@ function profileView(d){
   const [stText, stCls] = status(d);
   return el("div", {class:"profile"}, el("a", {class:"back", href:"#/", text:"← All companies"}),
     el("h2", {class:"name", text:d.name || d.org}), el("div", {class:"tags"}, el("span", {class:"tag " + stCls, text:stText}), el("span", {class:"tag", text:"Org. no. " + d.org}), el("span", {class:"tag", text:"Retrieved " + (d.run.completed_at || "").slice(0,10)})),
-    summary(d), unknowns(d), changesPanel(d), el("div", {class:"grid2"}, finTable(d), rolesPanel(d)), el("div", {class:"grid2"}, locPanel(d), groupPanel(d)), activityPanel(d), factsTable(d), evidencePanel(d),
+    sectionsPanel(d), exportProfile(d), summary(d), unknowns(d), changesPanel(d), el("div", {class:"grid2"}, finTable(d), rolesPanel(d)), el("div", {class:"grid2"}, locPanel(d), groupPanel(d)), activityPanel(d), factsTable(d), evidencePanel(d),
     el("p", {class:"meta", text:"Registry data: Brønnøysundregistrene (NLOD 2.0). Website facts are shown only when the page proves it belongs to this company."}));
 }
 
