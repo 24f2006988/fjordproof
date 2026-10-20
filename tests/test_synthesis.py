@@ -139,3 +139,35 @@ class ConclusionAndUnknownSources(unittest.TestCase):
         self.assertNotIn("newest filed", s["conclusion"])
         self.assertIn("The newest figures in the accounts register", s["conclusion"])
         self.assertIn("accounts for 2026 are registered as submitted but their figures are not yet available", s["conclusion"])
+
+
+class FiveAreas(unittest.TestCase):
+    def test_sections_answer_the_brief_questions_with_evidence(self):
+        env = envelope()
+        env["claims"] += [claim("registered_activity", "Butikk i kjeden Eksempel."), claim("workforce_fte", 2.0, "ev-workforce"),
+                          claim("board_chair", "Kari Nordmann", "ev-roles")]
+        env["claims"][[c["field"] for c in env["claims"]].index("workforce_fte")]["period"] = {"accounts_year": "2025"}
+        s = build_synthesis(env)
+        self.assertEqual([x["label"] for x in s["sections"]],
+                         ["Company brief", "Latest financials", "Who runs it?", "Working here", "Recent activity"])
+        by = {x["label"]: x for x in s["sections"]}
+        self.assertIn('"Butikk i kjeden Eksempel"', by["Company brief"]["text"])
+        self.assertIn("ev-registry_live", by["Company brief"]["evidence_ids"])
+        self.assertIn("2 man-years", by["Working here"]["text"])
+        self.assertIn("2026-09-01", by["Recent activity"]["text"])
+        self.assertIn("Kari Nordmann", s["conclusion"])
+        # man-years are known, so the employee count is not listed as an unknown
+        self.assertNotIn("employees", [u["field"] for u in s["unknowns"]])
+
+    def test_operating_margin_is_computed_from_filed_figures(self):
+        env = envelope()
+        env["claims"][[c["field"] for c in env["claims"]].index("annual_accounts")]["value"]["records"][-1]["operating_result"] = 150_000.0
+        s = build_synthesis(env)
+        self.assertTrue(any("Operating margin 10.0% in 2025" in x["text"] for x in s["statements"]))
+
+    def test_unanswered_area_says_so_and_still_cites_the_checked_source(self):
+        env = envelope()
+        env["claims"] = [c for c in env["claims"] if c["field"] != "news_items"]
+        by = {x["label"]: x for x in build_synthesis(env)["sections"]}
+        self.assertFalse(by["Recent activity"]["answered"])
+        self.assertEqual(by["Recent activity"]["text"], "No dated public activity was found.")

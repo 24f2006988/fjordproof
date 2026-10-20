@@ -126,16 +126,24 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     if industry:
         say("activity", f"Registered activity: {industry.get('label')} (NACE {industry.get('code')})"
             f"{'; founded ' + str(founded) if founded else ''}.", "industry", "incorporation_date")
+    activity_text = val("registered_activity") or val("statutory_purpose")
+    if activity_text:
+        src = "registered_activity" if val("registered_activity") else "statutory_purpose"
+        say("activity", f"In its own registered words, the company's activity is: \"{activity_text}\"", src)
 
-    # Size
+    # Size: registry headcount and the man-years (årsverk) stated in the filed accounts' notes
     emp, wp = val("employees"), val("registered_workplaces_count")
-    if emp is not None or wp:
+    fte = val("workforce_fte")
+    fte_year = ((claims.get("workforce_fte") or {}).get("period") or {}).get("accounts_year")
+    if emp is not None or wp or fte is not None:
         parts = []
         if emp is not None:
             parts.append(f"{emp} employees registered")
+        if fte is not None:
+            parts.append(f"{fte:g} man-years (årsverk) stated in the {fte_year or 'latest'} annual accounts")
         if wp:
             parts.append(f"{wp} registered sub-unit{'s' if wp != 1 else ''} (workplaces)")
-        say("size", "Size: " + " and ".join(parts) + ".", "employees", "registered_workplaces_count")
+        say("size", "Size: " + " and ".join(parts) + ".", "employees", "workforce_fte", "registered_workplaces_count")
 
     # Finances: newest filing of one scope, the multi-year trend, and a rule-based assessment.
     acc = (val("annual_accounts") or {}).get("records") or []
@@ -161,6 +169,10 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
                 f"figures only up to {period}; the {period} figures are therefore not the newest filing.", "latest_accounts_year")
             flag("newer_filing_pending", f"Accounts for {submitted['value']} are registered as submitted; their figures were not yet available.", "latest_accounts_year")
         res, eq, assets = last.get("annual_result"), last.get("equity"), last.get("assets")
+        rev, op = last.get("revenue"), last.get("operating_result")
+        if rev and rev > 0 and op is not None:
+            say("finances", f"Operating margin {op / rev * 100:.1f}% in {period} (operating result {_nok(op)} / revenue {_nok(rev)}, computed from the filed figures).",
+                "revenue", "operating_result")
         fin_bits = []
         if last.get("revenue") is not None:
             fin_bits.append(f"revenue {_nok(last.get('revenue'))}")
@@ -283,6 +295,8 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         c = claims.get(field)
         if not c or c.get("availability") == "available":
             continue
+        if field == "employees" and fte is not None:
+            continue  # the filed accounts state the workforce; not an unknown
         state = c.get("availability")
         reason = why if state == "not_available" else UNKNOWN_WHY.get(state, state)
         sources = [i for i in c.get("evidence_ids") or [] if i in known_ev]
@@ -333,23 +347,31 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         parts = [f"{name} ({org}) is {_form(form)}{' in ' + mun if mun else ''}"
                  + (f", registered for {label.lower()} (NACE {industry.get('code')})" if label else "")
                  + (f" since {str(founded)[:4]}" if founded else "") + f", and {state}."]
+        if activity_text:
+            parts.append(f"Its registered activity: \"{activity_text.rstrip('.')}\".")
+        if emp is not None:
+            parts.append(f"The registry reports {emp} employee{'s' if emp != 1 else ''}.")
+        if fte is not None:
+            parts.append(f"The {fte_year or 'latest'} annual accounts state {fte:g} man-years.")
+        active = [r for r in ((val("roles") or {}).get("roles") or []) if not r.get("inactive")]
+        runners = [p for p in people if p.startswith(("general manager", "board chair"))]
+        if runners:
+            parts.append("It is run by " + " and ".join(runners) + (f" ({len(active)} current roles in total)" if len(active) > len(runners) else "")
+                         + (f"; roles last changed on {recent[0].get('last_changed')}" if recent else "") + ".")
+        elif active:
+            parts.append(f"The role register lists {len(active)} current role{'s' if len(active) != 1 else ''}"
+                         + (f", most recently changed on {recent[0].get('last_changed')}" if recent else "") + ".")
         if fin_summary:
             parts.append(fin_summary + (f"; {revenue_change}" if revenue_change else "") + ".")
         elif (claims.get("annual_accounts") or {}).get("availability") == "not_available":
             parts.append("No filed annual accounts were found in the public accounts register.")
-        if emp is not None:
-            parts.append(f"The registry reports {emp} employee{'s' if emp != 1 else ''}.")
-        active = [r for r in ((val("roles") or {}).get("roles") or []) if not r.get("inactive")]
-        if active:
-            parts.append(f"The role register lists {len(active)} current role{'s' if len(active) != 1 else ''}"
-                         + (f", most recently changed on {recent[0].get('last_changed')}" if recent else "") + ".")
         if site:
             web = f"A company-owned website is verified ({site})"
             if news:
                 web += f", with dated news up to {news[0]['published_date']}"
-            if jobs:
-                web += f" and {len(jobs)} open job posting{'s' if len(jobs) != 1 else ''}"
             parts.append(web + ".")
+        if jobs:
+            parts.append(f"It advertises {len(jobs)} open job posting{'s' if len(jobs) != 1 else ''}.")
         else:
             parts.append("No company-owned website could be verified, so no website, social, news or job facts are published.")
         if unknowns:
@@ -368,9 +390,56 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         headline = head
     else:
         headline = statements[0]["text"] if statements else f"Organisation number {org}: no registry record could be read."
+    # The five questions of the brief, each answered from the cited facts above or stated as not established.
+    def section(label: str, texts: list[str], fields: tuple[str, ...], missing: str) -> dict[str, Any]:
+        texts = [t for t in texts if t]
+        return {"label": label, "answered": bool(texts), "text": " ".join(texts) if texts else missing,
+                "evidence_ids": ev(*fields) if texts else list(dict.fromkeys(i for u in unknowns for i in u["evidence_ids"]))[:3]}
+
+    def first(topic: str) -> str:
+        return next((s["text"] for s in statements if s["topic"] == topic), "")
+
+    brief = [first("identity"), first("activity")]
+    if activity_text:
+        brief.append(f"Registered activity in its own words: \"{activity_text.rstrip('.')}\".")
+    fin_texts = [s["text"] for s in statements if s["topic"] in {"finances", "trend"}]
+    run_texts = [s["text"] for s in statements if s["topic"] in {"leadership", "group"}]
+    work = [first("size")]
+    if jobs:
+        work.append(first("hiring"))
+    elif (claims.get("job_postings") or {}).get("availability") == "not_available":
+        work.append("No open job ad for this company was found in NAV's job feed on the run date.")
+    dated: list[tuple[str, str]] = []
+    if news:
+        dated.append((str(news[0]["published_date"]), f"latest company news {news[0]['published_date']}: \"{news[0]['title']}\""))
+    for j in jobs[:1]:
+        when = str(j.get("published") or j.get("published_date") or "")[:10]
+        if when:
+            dated.append((when, f"job ad \"{j['title']}\" published {when}"))
+    for r in recent[:2]:
+        dated.append((str(r.get("last_changed")), f"role registration changed: {r.get('role')} {_name(r.get('name') or r.get('organisation_number'))} ({r.get('last_changed')})"))
+    filings = val("annual_account_filings") or []
+    if filings:
+        dated.append((str(filings[0].get("year")), f"newest annual accounts filed with the accounts register: {filings[0].get('year')}"))
+    dated.sort(key=lambda d: d[0], reverse=True)
+    activity_line = ("Dated public activity, newest first: " + "; ".join(t for _, t in dated) + ".") if dated else ""
+    sections = [
+        section("Company brief", brief, ("name", "legal_form", "municipality", "insolvency_status", "industry", "incorporation_date",
+                                         "registered_activity", "statutory_purpose"), "No registry record could be read."),
+        section("Latest financials", fin_texts, ("annual_accounts", "revenue", "operating_result", "annual_result", "total_equity", "total_assets",
+                                                 "latest_accounts_year"), "No filed annual accounts were found in the public accounts register."),
+        section("Who runs it?", run_texts, ("ceo", "board_chair", "auditor", "audit_exemption", "roles", "group_structure"),
+                "No current roles are registered."),
+        section("Working here", work, ("employees", "workforce_fte", "registered_workplaces_count", "job_postings"),
+                "Neither a headcount, man-years nor an open job ad could be established."),
+        section("Recent activity", [activity_line], ("news_items", "job_postings", "roles", "annual_account_filings"),
+                "No dated public activity was found."),
+    ]
+
     return {
         "headline": headline,
         "conclusion": conclusion,
+        "sections": sections,
         "statements": statements,
         "signals": signals,
         "unknowns": unknowns,
