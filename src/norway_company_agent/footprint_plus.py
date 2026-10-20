@@ -833,6 +833,53 @@ def _email_from_text(text: str, site_domain: str) -> tuple[str, str] | None:
     return None
 
 
+CREDIT_CONTEXT = ("levert av", "design av", "utviklet av", "nettside av", "webdesign", "produsert av", "powered by", "laget av")
+MAX_CONTACTS = 8
+
+
+def page_contacts(html: str, base_domain: str, registry_email: str | None) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Every email and phone a verified company page prints: ([(email, span)], [(phone, span)]).
+
+    Emails count only on the site's own domain (or the registry's own address); phones from tel: links or next to a
+    phone label. Web-agency credits ("levert av", "design av", ...) are skipped. Spans are literal page text or markup."""
+    soup = BeautifulSoup(html, "lxml")
+    dom = (base_domain or "").casefold().removeprefix("www.")
+    reg = (registry_email or "").strip().casefold()
+    emails: dict[str, str] = {}
+    phones: dict[str, str] = {}
+
+    def own(addr: str) -> bool:
+        host = addr.rsplit("@", 1)[-1]
+        return bool(dom) and (host == dom or host.endswith("." + dom)) or (bool(reg) and addr == reg)
+
+    def credited(context: str) -> bool:
+        return any(c in context.casefold() for c in CREDIT_CONTEXT)
+
+    for a in soup.select("a[href]"):
+        href = str(a.get("href") or "").strip()
+        ctx = " ".join(x.get_text(" ", strip=True) for x in (a.parent,) if x is not None)[:300]
+        if href.lower().startswith("mailto:"):
+            addr = _clean_contact(href[7:].split("?", 1)[0], 120).casefold()
+            if "@" in addr and "@." not in addr and own(addr) and not credited(ctx):
+                emails.setdefault(addr, str(a))
+        elif href.lower().startswith("tel:"):
+            phone = _norm_phone(href[4:])
+            if phone and not credited(ctx):
+                phones.setdefault(phone, str(a))
+    text = soup.get_text(" ", strip=True)
+    for m in EMAIL_TEXT_RE.finditer(text):
+        addr = m.group(1).strip(".,;:()[]<>\"'").casefold()
+        if own(addr) and not credited(text[max(0, m.start() - 60):m.start()]):
+            emails.setdefault(addr, text[max(0, m.start() - 30):m.end() + 30].strip())
+    for m in PHONE_LABEL_RE.finditer(text):
+        phone = _norm_phone(m.group(1))
+        if phone and not credited(text[max(0, m.start() - 60):m.start()]):
+            phones.setdefault(phone, m.group(0).strip())
+    # Role addresses (post@, info@, ...) before personal ones.
+    order = sorted(emails.items(), key=lambda kv: (0 if kv[0].split("@")[0] in {"post", "info", "kontakt", "contact", "firmapost", "postmottak", "hello", "hei", "booking", "salg", "sales", "kundeservice", "service"} else 1, kv[0]))
+    return [(k, " ".join(v.split())[:240]) for k, v in order][:MAX_CONTACTS], [(k, " ".join(v.split())[:240]) for k, v in sorted(phones.items())][:MAX_CONTACTS]
+
+
 def _script_texts(soup: BeautifulSoup | None) -> str:
     if soup is None:
         return ""
@@ -1261,7 +1308,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
                     note("careers_urls", purl, p_src, p_sha, str(pa))
                 norm = normalize_social_url(purl)
                 if norm and not any(cand[0].get("url") == norm["url"] for cand in cached_social_candidates):
-                    ass = assess_social_identity(profile, norm)
+                    ass = assess_social_identity(profile, norm, base_domain)
                     if ass.get("publishable") and ass.get("identity_score", 0) >= 0.72 and ass.get("matched_tokens"):
                         cached_social_candidates.append((norm, p_src, p_sha, p_html))
             p_plain = p_soup.get_text(" ", strip=True)
@@ -1280,7 +1327,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     contact_links.sort(key=lambda u: 0 if any(k in u.casefold() for k in ("kontakt", "contact")) else 1)
 
     craw, cfinal, csha = None, None, None
-    if contact_links and (not contact.get("email") or not contact.get("phone") or not value.get("social_links")):
+    if contact_links:
         _NET.last_requests = 1
         craw, cfinal = _get(contact_links[0], timeout=5.0)
         metrics["requests"] += getattr(_NET, "last_requests", 1)
@@ -1472,7 +1519,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             curl = urllib.parse.urljoin(cfinal, str(ca.get("href") or ""))
             norm = normalize_social_url(curl)
             if norm and not any(cand[0].get("url") == norm["url"] for cand in all_social_candidates):
-                ass = assess_social_identity(profile, norm)
+                ass = assess_social_identity(profile, norm, base_domain)
                 if ass.get("publishable") and ass.get("identity_score", 0) >= 0.72 and ass.get("matched_tokens"):
                     all_social_candidates.append((norm, cfinal, csha, cpage_text))
 
@@ -1491,6 +1538,27 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         if span_hit and not any(s.get("url") == link.get("url") for s in social):
             social.append(link)
             note("social_links", url, cand_src, cand_sha, span_hit)
+
+    # Every own-domain email and every phone on the pages read above (home, contact page, cached secondary pages).
+    registry_email = ((profile.get("evidence", {}).get("registry_live") or {}).get("value") or {}).get("email")
+    contact_emails: list[str] = []
+    contact_phones: list[str] = []
+    for c_src, c_sha, c_html in [(final, home_sha, page_text), (cfinal or (contact_links[0] if contact_links else None), csha, cpage_text)] + cached_page_blobs:
+        if not (c_src and c_sha and c_html):
+            continue
+        p_emails, p_phones = page_contacts(c_html, base_domain, registry_email)
+        for addr, span in p_emails:
+            if addr not in contact_emails and len(contact_emails) < MAX_CONTACTS:
+                contact_emails.append(addr)
+                note("contact_emails", addr, c_src, c_sha, span)
+        for phone, span in p_phones:
+            if phone not in contact_phones and len(contact_phones) < MAX_CONTACTS:
+                contact_phones.append(phone)
+                note("contact_phones", phone, c_src, c_sha, span)
+    if contact_emails:
+        contact["emails"] = contact_emails
+    if contact_phones:
+        contact["phones"] = contact_phones
 
     found = bool(careers or activity or contact or news_pages or job_postings or social)
     return evidence(

@@ -141,7 +141,16 @@ GENERIC_DESCRIPTIVE_TOKENS = {
 }
 
 
-def assess_social_identity(profile: dict[str, Any], link: dict[str, str]) -> dict[str, Any]:
+def _domain_stem(site_domain: str | None) -> str:
+    """The brand label of a verified site's registered domain (thkolbeinsen.no -> thkolbeinsen), or "" when too generic."""
+    label = (site_domain or "").casefold().removeprefix("www.").split(".")[0]
+    stem = "".join(_tokens(label))
+    return stem if len(stem) >= 4 and stem not in GENERIC_DESCRIPTIVE_TOKENS and stem not in LEGAL_AND_GENERIC else ""
+
+
+def assess_social_identity(profile: dict[str, Any], link: dict[str, str], site_domain: str | None = None) -> dict[str, Any]:
+    """site_domain: the identity-verified website the link was found on; a handle carrying that site's brand label
+    is the same brand as the proven site, even when it does not spell the legal name (jobbsys.no -> facebook.com/jobbsys)."""
     core = _tokens(profile.get("name"))
     raw_core = _raw_tokens(profile.get("name"))
     parsed = urllib.parse.urlparse(link.get("url") or "")
@@ -204,6 +213,10 @@ def assess_social_identity(profile: dict[str, Any], link: dict[str, str]) -> dic
     elif has_distinctive_plus_prefix:
         score = 0.91
         reason = "distinctive brand token and secondary prefix appear in social handle"
+    elif (stem := _domain_stem(site_domain)) and stem in handle_compact:
+        score = 0.9
+        reason = f"social handle carries the verified website's domain name ({stem}) and is linked from that site"
+        matched = matched or [stem]
     else:
         score = 0.3
         reason = "social handle lacks strong exact-entity name evidence"
@@ -226,7 +239,8 @@ def apply_website_identity_gate(profile: dict[str, Any], website: dict[str, Any]
     value["identity_assessment"] = assessment
     original = list(value.get("discovered_social_links") or value.get("social_links") or [])
     value["discovered_social_links"] = original
-    social_assessments = [assess_social_identity(profile, link) for link in original]
+    site_domain = urllib.parse.urlparse(value.get("final_url") or website.get("source_url") or "").hostname
+    social_assessments = [assess_social_identity(profile, link, site_domain) for link in original]
     value["social_link_assessments"] = social_assessments
     value["social_links"] = [
         {"platform": item["platform"], "url": item["url"]}

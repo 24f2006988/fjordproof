@@ -8,6 +8,7 @@ from typing import Any
 
 from .observations import build_observations
 from .official import ACCOUNT_SCOPE, single_scope_accounts
+from .site_description import keyless_description
 from .synthesis import build_synthesis
 
 AVAILABILITY = {
@@ -238,6 +239,20 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         scalar(field, value, ev_name=ident if from_live else "registry",
                raw=_SAME if from_live else (bulk_group(bulk_key) if bulk_key and f"{bulk_key}.kode" in raw_rec else raw_rec.get(bulk_key or "")))
 
+    # Former names (historiskeNavn, with the period each was held) and secondary industry codes, from the same live record.
+    if ident == "registry_live":
+        for i, n in enumerate(live_rec.get("former_names") or []):
+            value = {"name": n.get("navn"), "from": n.get("fraDato"), "to": n.get("tilDato")}
+            claims.append({"field": "former_name", "value": value, "availability": "available", "confidence": 0.99,
+                           "period": {"fraDato": n.get("fraDato"), "tilDato": n.get("tilDato")},
+                           "evidence_ids": cite(ident, f"former_name-{i}", f"{register} {org}: historiskeNavn[{i}] = {_lit(n)}"),
+                           "raw_value": n, "source_path": f"enheter[{org}].historiskeNavn[{i}]"})
+        for i, code in enumerate(live_rec.get("secondary_industries") or [], 2):
+            claims.append({"field": "secondary_industry", "value": {"code": code.get("kode"), "label": code.get("beskrivelse")},
+                           "availability": "available", "confidence": 0.99,
+                           "evidence_ids": cite(ident, f"naeringskode{i}", f"{register} {org}: naeringskode{i} = {_lit(code)}"),
+                           "raw_value": code, "source_path": f"enheter[{org}].naeringskode{i}"})
+
     # Accounting obligation
     acc_ob = records.get("accounting_obligation", {})
     if acc_ob.get("status") == "available" and acc_ob.get("value"):
@@ -465,29 +480,33 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             **({"raw_value": val, "source_path": f"{web_val.get('final_url') or web_rec.get('source_url')} {selector}"} if present else {}),
         })
 
-    # Optional: what the company does, as sentences quoted from its verified website (model-selected, verbatim-checked).
-    # Only emitted when the step ran (GEMINI_API_KEY set), so keyless envelopes are unchanged.
+    # What the company does, quoted from its verified website. With GEMINI_API_KEY the step picks sentences (each checked
+    # verbatim on the page); otherwise, or when it found none, the site's own first prose paragraph / structured or meta
+    # description. Never published from an unproven site.
     desc_rec = records.get("site_description")
     desc_val = (desc_rec or {}).get("value") or {}
-    if desc_rec is not None:
-        sentences = desc_val.get("sentences") or []
-        desc_present = desc_rec.get("status") == "available" and web_ok and bool(sentences)
+    sentences = (desc_val.get("sentences") or []) if (desc_rec or {}).get("status") == "available" and web_ok else []
+    keyless = None if sentences or not web_ok else keyless_description(web_val, profile.get("name"))
+    if sentences:
         desc_ids = []
-        for i, s in enumerate(sentences if desc_present else [], 1):
+        for i, s in enumerate(sentences, 1):
             eid = f"ev-site_description-{i}"
             evidence.append({"id": eid, "source_url": desc_rec.get("source_url"), "source_class": "company_owned_site",
                              "retrieved_at": desc_rec.get("retrieved_at"), "content_sha256": desc_rec.get("content_sha256"), "claim_span": s[:240]})
             desc_ids.append(eid)
-        claims.append({
-            "field": "company_description",
-            "value": " ".join(sentences) if desc_present else None,
-            "availability": "available" if desc_present else ("not_applicable" if desc_rec.get("status") == "not_applicable" else
-                                                               "not_available" if desc_rec.get("status") == "not_found" else "failed"),
-            "confidence": 0.85 if desc_present else 0.0,
-            "evidence_ids": desc_ids,
-            **({"raw_value": sentences, "source_path": f"{desc_rec.get('source_url')} main text, sentences selected by {desc_val.get('model')}",
-                "method": desc_val.get("method")} if desc_present else {}),
-        })
+        claims.append({"field": "company_description", "value": " ".join(sentences), "availability": "available", "confidence": 0.85,
+                       "evidence_ids": desc_ids, "raw_value": sentences,
+                       "source_path": f"{desc_rec.get('source_url')} main text, sentences selected by {desc_val.get('model')}",
+                       "method": desc_val.get("method")})
+    elif keyless:
+        text, method, where = keyless
+        claims.append({"field": "company_description", "value": text, "availability": "available", "confidence": 0.8,
+                       "evidence_ids": cite("website", "company_description", text), "raw_value": text,
+                       "source_path": f"{web_val.get('final_url') or web_rec.get('source_url')} {where}", "method": method})
+    elif web_ok or desc_rec is not None:
+        claims.append({"field": "company_description", "value": None,
+                       "availability": "not_available" if web_ok else ("not_applicable" if (desc_rec or {}).get("status") == "not_applicable" else "failed"),
+                       "confidence": 0.0, "evidence_ids": []})
 
     # Granular external footprint signals
     fp_rec = records.get("external_footprint", {})
@@ -643,6 +662,10 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             atomic("social_profile", s, fp_item_evidence("social_links", s.get("url")), 0.80)
         for n in news:
             atomic("news_item", n, fp_item_evidence("dated_activity", n["url"]), 0.85)
+        for addr in contact_dict.get("emails") or []:
+            atomic("contact_email", addr, fp_item_evidence("contact_emails", addr), 0.85)
+        for phone in contact_dict.get("phones") or []:
+            atomic("contact_phone", phone, fp_item_evidence("contact_phones", phone), 0.85)
         for j in site_jobs:
             if isinstance(j, dict) and j.get("title"):
                 atomic("job_posting", j, fp_item_evidence("job_postings", j["title"]), 0.80)

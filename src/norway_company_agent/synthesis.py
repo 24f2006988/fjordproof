@@ -405,6 +405,11 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     site_desc = val("company_description")
     if site_desc:
         brief.append(f"Its verified website says: \"{site_desc}\"")
+    former = [c["value"] for c in envelope.get("claims", []) if c.get("field") == "former_name" and c.get("availability") == "available"]
+    if former:
+        brief.append("Former registered names: " + "; ".join(
+            f"{f['name']} ({str(f.get('from') or '')[:4]}-{str(f.get('to') or '')[:4]})" for f in former[-3:]) + ".")
+
     fin_texts = [s["text"] for s in statements if s["topic"] in {"finances", "trend"}]
     run_texts = [s["text"] for s in statements if s["topic"] in {"leadership", "group"}]
     work = [first("size")]
@@ -428,7 +433,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     activity_line = ("Dated public activity, newest first: " + "; ".join(t for _, t in dated) + ".") if dated else ""
     sections = [
         section("Company brief", brief, ("name", "legal_form", "municipality", "insolvency_status", "industry", "incorporation_date",
-                                         "registered_activity", "statutory_purpose", "company_description"), "No registry record could be read."),
+                                         "registered_activity", "statutory_purpose", "company_description", "former_name"), "No registry record could be read."),
         section("Latest financials", fin_texts, ("annual_accounts", "revenue", "operating_result", "annual_result", "total_equity", "total_assets",
                                                  "latest_accounts_year"), "No filed annual accounts were found in the public accounts register."),
         section("Who runs it?", run_texts, ("ceo", "board_chair", "auditor", "audit_exemption", "roles", "group_structure"),
@@ -448,5 +453,6 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         "unknowns": unknowns,
         "changes": change_text,
         "method": "Generated deterministically from this envelope's claims; every statement cites the evidence of those claims. No model or external inference is used."
-                  + (" The quoted website sentences were chosen by a language model and kept only where they occur verbatim on the verified page." if site_desc else ""),
+                  + (" The quoted website sentences were chosen by a language model and kept only where they occur verbatim on the verified page."
+                     if site_desc and "selected by" in str((claims.get("company_description") or {}).get("source_path") or "") else ""),
     }

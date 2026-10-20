@@ -73,11 +73,26 @@ class SiteDescriptionTest(unittest.TestCase):
         brief = next(s for s in env["synthesis"]["sections"] if s["label"] == "Company brief")
         self.assertIn("Its verified website says", brief["text"])
 
-    def test_keyless_envelopes_have_no_description_claim(self):
-        env = to_contract(terminal_envelope(profile(), run_id="t", modules=["registry_live", "website"],
+    def test_keyless_description_quotes_the_site_without_a_model(self):
+        pr = profile()
+        pr["evidence"]["website"]["value"]["main_text_excerpt"] = (
+            "Meny Hjem Om oss Kontakt\nVi godtar informasjonskapsler for å gi deg en bedre opplevelse på nettstedet vårt i dag.\n"
+            "Eksempel AS leverer regnskapstjenester, lønn og rådgivning til små og mellomstore bedrifter i hele Oslo-området. "
+            "Vi har lang erfaring og fast kontaktperson for hver kunde.")
+        env = to_contract(terminal_envelope(pr, run_id="t", modules=["registry_live", "website"],
                                             started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z"))
-        self.assertNotIn("company_description", {c["field"] for c in env["claims"]})
+        claim = next(c for c in env["claims"] if c["field"] == "company_description")
+        self.assertTrue(claim["value"].startswith("Eksempel AS leverer regnskapstjenester"))
+        self.assertEqual(claim["method"], "homepage paragraph naming the company")
+        span = next(e["claim_span"] for e in env["evidence"] if e["id"] == claim["evidence_ids"][0])
+        self.assertEqual(span, claim["value"])
         self.assertEqual(env["operations"]["third_party_cost_usd"], 0)
+        self.assertNotIn("language model", env["synthesis"]["method"])
+
+    def test_no_description_from_an_unproven_site(self):
+        env = to_contract(terminal_envelope(profile(publishable=False), run_id="t", modules=["registry_live", "website"],
+                                            started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z"))
+        self.assertFalse(any(c["field"] == "company_description" and c["availability"] == "available" for c in env["claims"]))
 
 
 if __name__ == "__main__":

@@ -210,6 +210,8 @@ def normalize_entity(body: Any) -> dict[str, Any]:
         "statutes_date": body.get("vedtektsdato"),
         "written_standard": body.get("maalform"),
         "mobile": body.get("mobil"),
+        "former_names": [n for n in body.get("historiskeNavn") or [] if isinstance(n, dict) and n.get("navn")],
+        "secondary_industries": [body[k] for k in ("naeringskode2", "naeringskode3") if isinstance(body.get(k), dict) and body[k].get("kode")],
     }
 
 

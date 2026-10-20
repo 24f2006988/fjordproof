@@ -20,6 +20,7 @@ import urllib.request
 from typing import Any
 
 from .evidence import evidence, utc_now
+from .identity import LEGAL_AND_GENERIC, _tokens
 
 DEFAULT_MODEL = "gemini-2.5-flash-lite"
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -83,6 +84,58 @@ def _call(prompt: str, timeout: float) -> tuple[list[str], dict[str, int]]:
     parts = (((payload.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [{}])
     text = "".join(str(p.get("text") or "") for p in parts)
     return (json.loads(text).get("sentences") or []) if text.strip() else [], tokens
+
+
+BOILERPLATE = ("cookie", "informasjonskapsler", "personvern", "privacy", "javascript", "nettleser", "browser", "logg inn", "log in",
+               "handlekurv", "copyright", "alle rettigheter", "all rights reserved", "abonner", "nyhetsbrev", "newsletter")
+
+
+def _prose(text: str) -> bool:
+    """A real sentence or paragraph, not a menu, cookie banner or list of links."""
+    t = _norm(text)
+    low = t.casefold()
+    words = t.split()
+    if len(t) < 80 or sum(b in low for b in BOILERPLATE) >= 1 or "@" in t:
+        return False
+    if t[:1] in "«\"“”'‘’„":  # a quoted testimonial is somebody else speaking about the company
+        return False
+    marks = sum(low.count(m) for m in (". ", "! ", "? ")) + (1 if t.endswith((".", "!", "?")) else 0)
+    caps = sum(1 for w in words if w[:1].isupper())
+    return marks >= 1 and caps / max(len(words), 1) < 0.5
+
+
+def _cut(text: str) -> str:
+    """At most MAX_CHARS, ending on a sentence boundary when one exists past 80 characters."""
+    if len(text) <= MAX_CHARS:
+        return text
+    head = text[:MAX_CHARS]
+    end = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    return head[:end + 1] if end >= 80 else head
+
+
+def keyless_description(site_value: dict[str, Any], name: str | None = None) -> tuple[str, str, str] | None:
+    """(text, method, where) of the company's own description of its business, without any model.
+
+    Order: a homepage paragraph that names the company ("Ocab er en landsdekkende mesterhåndverksbedrift ..."), then the
+    schema.org Organization description, then the meta description, then the first prose paragraph. A paragraph that
+    does not name the company is often about something else (directions, a seasonal notice), so it comes last.
+    The text is quoted as published (whitespace normalised), capped at the evidence span limit."""
+    paragraphs = [_norm(p) for p in str(site_value.get("main_text_excerpt") or "").splitlines() if _prose(p)]
+    brand = {t for t in _tokens(name) if len(t) >= 3 and t not in LEGAL_AND_GENERIC}
+    for para in paragraphs[:8]:
+        if brand and brand & set(_tokens(para)):
+            return _cut(para), "homepage paragraph naming the company", "main text"
+    for org in site_value.get("structured_organisations") or []:
+        d = _norm(str((org or {}).get("description") or ""))
+        if _prose(d):
+            return _cut(d), "schema.org Organization description on the homepage", "json-ld Organization.description"
+    d = _norm(str(site_value.get("description") or ""))
+    if _prose(d):
+        return _cut(d), "homepage meta description", 'meta[name="description"]@content'
+    for para in paragraphs:
+        if len(para) >= 120:
+            return _cut(para), "first prose paragraph of the homepage main text", "main text"
+    return None
 
 
 def cost_usd(tokens: dict[str, int]) -> float:

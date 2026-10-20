@@ -156,6 +156,13 @@ Every `available` claim cites `evidence_ids`; missing data is `not_available`/`b
   company website is sent to the Gemini API, which picks up to three sentences describing what the company does. A sentence is published
   (claim `company_description`) only if it occurs verbatim on that page; the model never supplies numbers, names or dates. One request per
   verified site (~15 per 100 companies), about 2,000 input tokens each: roughly USD 0.003 per 100 companies, reported in `third_party_cost_usd`.
+- Registry claims also include every former name (`former_name`, from `historiskeNavn`, with the dates each was held) and
+  secondary industry codes (`secondary_industry`, `naeringskode2/3`), from the record already fetched (no extra request).
+- From identity-verified company websites only: every email on the site's own domain (or the registry's own address) and every
+  phone number (`contact_email`, `contact_phone`, one claim each with its page and literal span; web-agency credits skipped;
+  the contact page is always read, one request per verified site); social profiles whose handle spells the legal name or the
+  verified site's own domain name; and `company_description`, the site's own words (a homepage paragraph naming the company,
+  else its schema.org or meta description; with the optional Gemini step, model-selected sentences checked verbatim).
 - Every available claim carries `raw_value` (the value exactly as the source holds it) and `source_path` (where it sits in the source,
   e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresultat` or `enheter[<org>].naeringskode1`).
 - Expected third-party cost: USD 0. Measured (smoke-023): 1,745 requests and ~8.4 min per 100 companies (limit per 100-company shard: 2,000 requests / 45 min).
