@@ -168,6 +168,57 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertIn("company accounts (SELSKAP)", fin)
         self.assertNotIn("950", fin)
 
+    def test_earlier_years_get_one_figure_claim_each_and_never_mix_scopes(self):
+        recs = [
+            {"record_id": 1, "account_type": "SELSKAP", "currency": "NOK", "revenue": 1.0, "wage_costs": 5.0, "period": {"fraDato": "2023-01-01", "tilDato": "2023-12-31"}},
+            {"record_id": 2, "account_type": "KONSERN", "currency": "NOK", "revenue": 99.0, "period": {"fraDato": "2024-01-01", "tilDato": "2024-12-31"}},
+            {"record_id": 3, "account_type": "SELSKAP", "currency": "NOK", "revenue": 2.0, "period": {"fraDato": "2024-01-01", "tilDato": "2024-12-31"}},
+            {"record_id": 4, "account_type": "SELSKAP", "currency": "NOK", "revenue": 3.0, "wage_costs": 7.0, "period": {"fraDato": "2025-01-01", "tilDato": "2025-12-31"}},
+        ]
+        profile = {
+            "organisation_number": "123456789", "name": "Eksempel AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
+            "evidence": {"financials": evidence("financials", "available", "official_annual_accounts", "https://data.brreg.no/regnskapsregisteret/regnskap/123456789",
+                value={"records": recs})},
+            "run_metrics": {"requests": 1, "latencies_ms": [1], "plus_requests": 0},
+        }
+        env = terminal_envelope(profile, run_id="t", modules=["financials"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z")
+        out = to_contract(env)
+        latest = {c["field"]: c for c in out["claims"]}
+        self.assertEqual((latest["revenue"]["value"], latest["wage_costs"]["value"]), (3.0, 7.0))
+        figures = {(c["metric"], c["accounts_year"]): c for c in out["claims"] if c["field"] == "annual_account_figure"}
+        self.assertEqual(set(figures), {("revenue", "2023"), ("wage_costs", "2023"), ("revenue", "2024")})
+        self.assertEqual(figures[("revenue", "2024")]["source_record_id"], 3)  # company accounts, not the group's 99.0
+        ev = {e["id"]: e for e in out["evidence"]}
+        span = ev[figures[("revenue", "2023")]["evidence_ids"][0]]["claim_span"]
+        self.assertTrue(span.startswith("Brreg Regnskapsregisteret sumDriftsinntekter = 1.0;"))
+        self.assertIn("record 1", span)
+        self.assertIn("2023-01-01 to 2023-12-31", span)
+
+    def test_extra_registry_fields_are_claimed_from_the_same_record(self):
+        from norway_company_agent.official import normalize_entity
+        body = {"organisasjonsnummer": "123456789", "navn": "Eksempel AS", "telefon": "22 00 00 00", "mobil": "22 00 00 00",
+                "aktivitet": ["Butikk i kjeden", "Eksempel."], "institusjonellSektorkode": {"kode": "2100", "beskrivelse": "Private aksjeselskaper mv."},
+                "registreringsdatoEnhetsregisteret": "2019-02-11", "underTvangsavviklingEllerTvangsopplosning": False, "erIKonsern": True}
+        profile = {
+            "organisation_number": "123456789", "name": "Eksempel AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
+            "evidence": {"registry_live": evidence("registry_live", "available", "official_registry_live",
+                         "https://data.brreg.no/enhetsregisteret/api/enheter/123456789", value=normalize_entity(body))},
+            "run_metrics": {"requests": 1, "latencies_ms": [1], "plus_requests": 0},
+        }
+        env = terminal_envelope(profile, run_id="t", modules=["registry_live"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z")
+        out = to_contract(env)
+        claims = {c["field"]: c for c in out["claims"]}
+        self.assertEqual(claims["registered_activity"]["value"], "Butikk i kjeden Eksempel.")
+        self.assertEqual(claims["sector"]["value"]["kode"], "2100")
+        self.assertEqual(claims["registered_at"]["value"], "2019-02-11")
+        self.assertIs(claims["forced_dissolution"]["value"], False)
+        self.assertEqual(claims["forced_dissolution"]["availability"], "available")
+        self.assertIs(claims["part_of_group"]["value"], True)
+        self.assertNotIn("registered_mobile", claims)  # same number as registered_phone
+        self.assertEqual(claims["statutory_purpose"]["availability"], "not_available")
+        ev = {e["id"]: e for e in out["evidence"]}
+        self.assertIn("aktivitet = ", ev[claims["registered_activity"]["evidence_ids"][0]]["claim_span"])
+
     def test_claim_spans_quote_the_source_value_and_filings_are_listed(self):
         org = "123456789"
         profile = {

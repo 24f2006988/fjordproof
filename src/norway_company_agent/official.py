@@ -170,6 +170,14 @@ def normalize_locations(body: Any) -> dict[str, Any]:
     } for item in rows]}
 
 
+def _lines(value: Any) -> str | None:
+    """Brreg splits free text (activity, purpose) into display lines; rejoin them verbatim."""
+    if isinstance(value, list):
+        text = " ".join(str(v).strip() for v in value if str(v).strip())
+        return text or None
+    return str(value).strip() or None if value else None
+
+
 def normalize_entity(body: Any) -> dict[str, Any]:
     body = body if isinstance(body, dict) else {}
     return {
@@ -190,6 +198,18 @@ def normalize_entity(body: Any) -> dict[str, Any]:
         "incorporation_date": body.get("stiftelsesdato"),
         "vat_registered": body.get("registrertIMvaregisteret"),
         "audit_exemption": body.get("fravalgRevisjonBeslutningsDato"),
+        # Further fields of the same response, published as their own registry claims (no extra request)
+        "registered_activity": _lines(body.get("aktivitet")),
+        "statutory_purpose": _lines(body.get("vedtektsfestetFormaal")),
+        "sector": body.get("institusjonellSektorkode"),
+        "registered_at": body.get("registreringsdatoEnhetsregisteret"),
+        "business_register_date": body.get("registreringsdatoForetaksregisteret"),
+        "vat_register_date": body.get("registreringsdatoMerverdiavgiftsregisteret"),
+        "forced_dissolution": body.get("underTvangsavviklingEllerTvangsopplosning"),
+        "part_of_group": body.get("erIKonsern"),
+        "statutes_date": body.get("vedtektsdato"),
+        "written_standard": body.get("maalform"),
+        "mobile": body.get("mobil"),
     }
 
 

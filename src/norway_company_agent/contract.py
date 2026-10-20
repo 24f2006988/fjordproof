@@ -51,12 +51,31 @@ REGISTRY_KEYS = {
     "registered_office": "forretningsadresse", "postal_address": "postadresse", "registered_email": "epostadresse",
     "registered_phone": "telefon", "share_capital": "kapital", "incorporation_date": "stiftelsesdato",
     "vat_registered": "registrertIMvaregisteret", "audit_exemption": "fravalgRevisjonBeslutningsDato",
+    "registered_activity": "aktivitet", "statutory_purpose": "vedtektsfestetFormaal", "sector": "institusjonellSektorkode",
+    "registered_at": "registreringsdatoEnhetsregisteret", "business_register_date": "registreringsdatoForetaksregisteret",
+    "vat_register_date": "registreringsdatoMerverdiavgiftsregisteret",
+    "forced_dissolution": "underTvangsavviklingEllerTvangsopplosning", "part_of_group": "erIKonsern",
+    "statutes_date": "vedtektsdato", "written_standard": "maalform", "registered_mobile": "mobil",
+}
+# live registry_live key -> bulk snapshot key, for the extra registry claims
+REGISTRY_EXTRA = {
+    "registered_activity": None, "statutory_purpose": None, "sector": "institusjonellSektorkode",
+    "registered_at": "registreringsdatoEnhetsregisteret", "business_register_date": "registreringsdatoForetaksregisteret",
+    "vat_register_date": "registreringsdatoMerverdiavgiftsregisteret",
+    "forced_dissolution": "underTvangsavviklingEllerTvangsopplosning", "part_of_group": "erIKonsern",
+    "statutes_date": "vedtektsdato", "written_standard": "maalform", "mobile": "mobil",
 }
 # claim field -> Brreg Regnskapsregisteret field
 ACCOUNT_KEYS = {
     "latest_accounts_year": "regnskapsperiode.tilDato", "revenue": "sumDriftsinntekter", "operating_result": "driftsresultat",
     "profit_before_tax": "ordinaertResultatFoerSkattekostnad", "annual_result": "aarsresultat", "total_assets": "sumEiendeler",
-    "total_equity": "sumEgenkapital", "total_debt": "sumGjeld",
+    "total_equity": "sumEgenkapital", "total_debt": "sumGjeld", "wage_costs": "loennskostnad",
+}
+# claim metric -> key in our normalized account record, for earlier years
+PRIOR_YEAR_METRICS = {
+    "revenue": "revenue", "operating_result": "operating_result", "wage_costs": "wage_costs",
+    "profit_before_tax": "profit_before_tax", "annual_result": "annual_result", "total_assets": "assets",
+    "total_equity": "equity", "total_debt": "debt",
 }
 
 # module claim -> literal summary of what the source returned
@@ -167,6 +186,23 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     scalar("vat_registered", live_rec.get("vat_registered") if "vat_registered" in live_rec else (raw_rec.get("registrertIMvaregisteret") == "true" if "registrertIMvaregisteret" in raw_rec else None))
     scalar("audit_exemption", live_rec.get("audit_exemption") or raw_rec.get("fravalgRevisjonBeslutningsDato"))
 
+    # Further fields of the same registry record: activity text, sector, register dates, group flag, etc.
+    def bulk(key: str | None) -> Any:
+        if not key:
+            return None
+        if f"{key}.kode" in raw_rec:
+            return {"kode": raw_rec.get(f"{key}.kode"), "beskrivelse": raw_rec.get(f"{key}.beskrivelse")}
+        v = raw_rec.get(key)
+        return {"true": True, "false": False}.get(v, v) if isinstance(v, str) else v
+    for live_key, bulk_key in REGISTRY_EXTRA.items():
+        value = live_rec[live_key] if live_key in live_rec else bulk(bulk_key)
+        field = "registered_mobile" if live_key == "mobile" else live_key
+        if live_key in {"forced_dissolution", "part_of_group"} and value is None:
+            continue  # a missing flag is not "false"; say nothing
+        if live_key == "mobile" and (not value or value == phone):
+            continue  # already published as registered_phone
+        scalar(field, value, ev_name=ident if live_key in live_rec else "registry")
+
     # Accounting obligation
     acc_ob = records.get("accounting_obligation", {})
     if acc_ob.get("status") == "available" and acc_ob.get("value"):
@@ -227,6 +263,25 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     fin_scalar("total_assets", latest_acc.get("assets"))
     fin_scalar("total_equity", latest_acc.get("equity"))
     fin_scalar("total_debt", latest_acc.get("debt"))
+    fin_scalar("wage_costs", latest_acc.get("wage_costs"))
+
+    # Earlier filed years we already hold: one claim per figure per year, each quoting its own record and period.
+    for acc in scoped[:-1] if fin_ok and "ev-financials" in by_id else []:
+        p = acc.get("period") or {}
+        year = str(p.get("tilDato") or "")[:4]
+        ctx = (f"record {acc.get('record_id')} for {org}: {ACCOUNT_SCOPE.get(acc.get('account_type'), acc.get('account_type') or 'scope not stated')}, "
+               f"period {p.get('fraDato')} to {p.get('tilDato')}, currency {acc.get('currency') or 'not stated'}")
+        for metric, key in PRIOR_YEAR_METRICS.items():
+            val = acc.get(key)
+            if val is None:
+                continue
+            claims.append({
+                "field": "annual_account_figure", "metric": metric, "value": val, "period": p or None,
+                "accounts_year": year, "scope": acc.get("account_type"), "currency": acc.get("currency"),
+                "source_record_id": acc.get("record_id"), "availability": "available", "confidence": 0.99,
+                "evidence_ids": cite("financials", f"{metric}-{year}-{acc.get('record_id')}",
+                                     f"Brreg Regnskapsregisteret {ACCOUNT_KEYS.get(metric, metric)} = {_lit(val)}; {ctx}"),
+            })
 
     # Every annual account filed with the Register of Company Accounts: year + official copy URL.
     fh_rec = records.get("financial_history", {})
