@@ -94,6 +94,18 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertEqual(claims["website_title"]["value"], "Eksempel AS Hjemmeside")
         self.assertEqual(claims["careers_urls"]["value"], ["https://eksempel.no/karriere"])
         self.assertEqual(claims["social_profiles"]["value"], [{"platform": "linkedin", "url": "https://linkedin.com/company/eksempel"}])
+        # Every published fact names its raw source value and where it sits in the source.
+        for c in contract["claims"]:
+            if c["availability"] == "available":
+                self.assertIn("raw_value", c, c["field"])
+                self.assertTrue(c.get("source_path"), c["field"])
+        self.assertEqual(claims["revenue"]["source_path"], "regnskap[regnskapsperiode.tilDato=2024-12-31].resultatregnskapResultat.driftsresultat.driftsinntekter.sumDriftsinntekter")
+        self.assertEqual(claims["revenue"]["raw_value"], 1000000.0)
+        self.assertEqual(claims["latest_accounts_year"]["raw_value"], "2024-12-31")
+        self.assertEqual(claims["registered_office"]["source_path"], "enheter[123456789].forretningsadresse")
+        self.assertEqual(claims["registered_office"]["raw_value"]["adresse"], ["Storgata 1"])
+        self.assertEqual(claims["ceo"]["source_path"], "roller[123456789].rollegrupper.roller[type.kode=DAGL].person.navn")
+        self.assertEqual(claims["site_email"]["raw_value"], "hei@eksempel.no")
 
     def _care_of_env(self, reasons):
         profile = {
