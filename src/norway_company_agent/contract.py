@@ -465,6 +465,30 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             **({"raw_value": val, "source_path": f"{web_val.get('final_url') or web_rec.get('source_url')} {selector}"} if present else {}),
         })
 
+    # Optional: what the company does, as sentences quoted from its verified website (model-selected, verbatim-checked).
+    # Only emitted when the step ran (GEMINI_API_KEY set), so keyless envelopes are unchanged.
+    desc_rec = records.get("site_description")
+    desc_val = (desc_rec or {}).get("value") or {}
+    if desc_rec is not None:
+        sentences = desc_val.get("sentences") or []
+        desc_present = desc_rec.get("status") == "available" and web_ok and bool(sentences)
+        desc_ids = []
+        for i, s in enumerate(sentences if desc_present else [], 1):
+            eid = f"ev-site_description-{i}"
+            evidence.append({"id": eid, "source_url": desc_rec.get("source_url"), "source_class": "company_owned_site",
+                             "retrieved_at": desc_rec.get("retrieved_at"), "content_sha256": desc_rec.get("content_sha256"), "claim_span": s[:240]})
+            desc_ids.append(eid)
+        claims.append({
+            "field": "company_description",
+            "value": " ".join(sentences) if desc_present else None,
+            "availability": "available" if desc_present else ("not_applicable" if desc_rec.get("status") == "not_applicable" else
+                                                               "not_available" if desc_rec.get("status") == "not_found" else "failed"),
+            "confidence": 0.85 if desc_present else 0.0,
+            "evidence_ids": desc_ids,
+            **({"raw_value": sentences, "source_path": f"{desc_rec.get('source_url')} main text, sentences selected by {desc_val.get('model')}",
+                "method": desc_val.get("method")} if desc_present else {}),
+        })
+
     # Granular external footprint signals
     fp_rec = records.get("external_footprint", {})
     # Facts read from a site are only as good as the site's identity: none are published from an unproven site.
@@ -658,7 +682,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     envelope["operations"] = {
         "requests": int(metrics.get("requests", 0)) + int(metrics.get("plus_requests", 0)) + int(metrics.get("workforce_requests", 0)),
         "runtime_ms": int(sum(metrics.get("latencies_ms", []))),
-        "third_party_cost_usd": 0,
+        "third_party_cost_usd": float(desc_val.get("cost_usd") or 0) or 0,
     }
     envelope.setdefault("changes", [])
     envelope["synthesis"] = build_synthesis(envelope)

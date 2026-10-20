@@ -151,6 +151,13 @@ Every `available` claim cites `evidence_ids`; missing data is `not_available`/`b
 ### Submission facts
 - Run command (`--bulk` is optional; without it each company is looked up live in Brreg, about 1 extra request each): `uv sync && uv run python scripts/run_signalpost.py --organisations <batch.jsonl> [--bulk brreg-enheter.csv] --run-id <id> --expected-count <n> --outdir out`
 - Models/APIs: none (no LLM, no paid API). Sources: Brønnøysundregistrene open data (NLOD 2.0) and company-owned websites (robots.txt respected, public-URL guard).
+- Optional model step, off by default (no key = no request, no cost, envelopes unchanged): with `GEMINI_API_KEY` set (Builderr-supplied key;
+  model `gemini-2.5-flash-lite`, override with `GEMINI_MODEL`; `SIGNALPOST_LLM=off` disables it), the visible text of each identity-verified
+  company website is sent to the Gemini API, which picks up to three sentences describing what the company does. A sentence is published
+  (claim `company_description`) only if it occurs verbatim on that page; the model never supplies numbers, names or dates. One request per
+  verified site (~15 per 100 companies), about 2,000 input tokens each: roughly USD 0.003 per 100 companies, reported in `third_party_cost_usd`.
+- Every available claim carries `raw_value` (the value exactly as the source holds it) and `source_path` (where it sits in the source,
+  e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresultat` or `enheter[<org>].naeringskode1`).
 - Expected third-party cost: USD 0. Measured (smoke-023): 1,745 requests and ~8.4 min per 100 companies (limit per 100-company shard: 2,000 requests / 45 min).
 - 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run smoke-023, contract format, 100/100 envelopes, validation passed, 141 tests pass).
 

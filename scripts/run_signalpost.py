@@ -25,6 +25,7 @@ from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.footprint_plus import discover_website, extract_footprint  # noqa: E402
 from norway_company_agent.nav_jobs import JobFeed, fetch_jobs  # noqa: E402
+from norway_company_agent import site_description  # noqa: E402
 from norway_company_agent.workforce import fetch_workforce  # noqa: E402
 
 MODULES = "registry,accounting_obligation,registry_live,financials,financial_history,roles,group,locations,website,external_footprint,workforce,nav_jobs"
@@ -220,18 +221,43 @@ def main() -> None:
     report["footprint_retries"] = len(fp_retry)
     for pr in profiles:
         pr.setdefault("run_metrics", {})
+
+    # Optional (GEMINI_API_KEY): sentences quoted from verified websites, chosen by a model and checked verbatim.
+    # Without a key this adds no module, no request and no cost.
+    modules = MODULES.split(",") + (["site_description"] if site_description.configured() else [])
+    model_cost = 0.0
+    cost_lock = threading.Lock()
+
+    def describe(profile: dict) -> None:
+        nonlocal model_cost
+        rec, used, cost = None, 0, 0.0
+        if not budget.is_exhausted(safety_margin_seconds=300.0, safety_margin_requests=100):
+            rec, used, cost = site_description.describe(profile)
+        profile["evidence"]["site_description"] = rec or evidence(
+            "site_description", "not_applicable", "company_owned_site", "https://builderr.ai",
+            note="No identity-verified website (or budget guard active); no description requested.")
+        budget.record_requests(used)
+        profile["run_metrics"]["plus_requests"] = profile["run_metrics"].get("plus_requests", 0) + used
+        with cost_lock:
+            model_cost += cost
+
+    if "site_description" in modules:
+        with ThreadPoolExecutor(4) as pool:
+            list(pool.map(describe, profiles))
+        report["site_description"] = {"model": site_description.model(), "cost_usd": round(model_cost, 6),
+                                      "described": sum(pr["evidence"]["site_description"]["status"] == "available" for pr in profiles)}
     with ThreadPoolExecutor(a.ocr_workers) as pool:
         list(pool.map(workforce, profiles))
     completed = utc_now()
-    envelopes = [terminal_envelope(pr, run_id=a.run_id, modules=MODULES.split(","), started_at=report["started_at"], completed_at=completed) for pr in profiles]
+    envelopes = [terminal_envelope(pr, run_id=a.run_id, modules=modules, started_at=report["started_at"], completed_at=completed) for pr in profiles]
     for e in envelopes:
         e["changes"] = e["profile"].get("changes_since_previous", [])
         to_contract(e)
     validation = validate_envelopes(envelopes, a.expected_count)
     plus_requests = sum(pr.get("run_metrics", {}).get("plus_requests", 0) + pr.get("run_metrics", {}).get("workforce_requests", 0) for pr in profiles)
-    report.update({"modules": MODULES.split(","), "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})
+    report.update({"modules": modules, "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})
     report["operations"]["requests"] += plus_requests + feed.requests
-    report["operations"]["third_party_cost_usd"] = 0
+    report["operations"]["third_party_cost_usd"] = round(model_cost, 6)
     report["operations"]["budget_exhausted"] = budget.is_exhausted(safety_margin_seconds=0, safety_margin_requests=0)
 
     write_jsonl(profiles_path, profiles)
