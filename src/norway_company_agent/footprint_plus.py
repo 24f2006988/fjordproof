@@ -19,6 +19,7 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
+from . import discovery_index
 from .evidence import evidence, utc_now
 from .google_search import google_candidate_hosts
 from .identity import LEGAL_AND_GENERIC, _tokens, apply_website_identity_gate, assess_social_identity
@@ -143,8 +144,10 @@ def _slug_variants(text: str) -> set[str]:
 
 
 
-# Candidate sources named by a third party (registry e-mail, NAV ad): address-only proof is never enough.
-STRICT_METHODS = {"registry_email_domain", "job_feed_homepage"}
+# Candidate sources named by a third party (registry e-mail, NAV ad, crawl cache): address-only proof is never enough.
+STRICT_METHODS = {"registry_email_domain", "job_feed_homepage", "discovery_index"}
+# Crawl-cache candidates are published only on the exact organisation number printed live today.
+EXACT_ONLY_METHODS = {"discovery_index"}
 
 def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     """(host, method) pairs, best first. Method decides how strict the identity gate must be."""
@@ -155,6 +158,10 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     org_key = re.sub(r"\D", "", str(profile.get("organisation_number") or ""))
     search_timeout = float(getattr(_NET, "search_timeout", 8.0))
     search_reqs = 0
+
+    # 0. Declared Common Crawl discovery cache: hosts that printed this org number when crawled
+    for idx_host, _page in discovery_index.candidates(profile):
+        out.append((idx_host, "discovery_index"))
 
     # 1. Registered email domains (from registry bulk, live, and subunits)
     emails: list[str] = []
@@ -334,7 +341,7 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     for host, method in out:
         if host not in seen:
             seen.add(host)
-            if method in {"registry_email_domain", "job_feed_homepage", "google_search_candidate", "brave_search_candidate"} or host.endswith(".no"):
+            if method in {"discovery_index", "registry_email_domain", "job_feed_homepage", "google_search_candidate", "brave_search_candidate"} or host.endswith(".no"):
                 no_hosts.append((host, method))
             else:
                 other_hosts.append((host, method))
@@ -418,6 +425,7 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
     _NET.search_timeout = effective_timeout
     hosts = candidate_hosts(profile)
     metrics["requests"] += getattr(_NET, "search_requests", 0)
+    index_pages = {h: u for h, u in discovery_index.candidates(profile)}
     for host, method in hosts:
         if not _resolves(host):
             continue
@@ -433,15 +441,20 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
             continue
         gated = apply_website_identity_gate(profile, record)
         assessment = gated["assessment"] or {}
-        ok = bool(assessment.get("publishable")) if method in STRICT_METHODS else assessment.get("score") == 1.0
-        if not ok and assessment.get("score", 0) >= 0.3:
-            weak = assessment.get("score", 0) < 0.5
-            proof, pm = hard_identity_proof(profile, record, WEAK_CANDIDATE_PROOF_PAGES if weak else MAX_PROOF_PAGES, effective_timeout)
+        exact_only = method in EXACT_ONLY_METHODS
+        ok = False if exact_only else (bool(assessment.get("publishable")) if method in STRICT_METHODS else assessment.get("score") == 1.0)
+        if not ok and (exact_only or assessment.get("score", 0) >= 0.3):
+            weak = assessment.get("score", 0) < 0.5 and not exact_only
+            hint = index_pages.get(host) if exact_only else None
+            proof, pm = hard_identity_proof(profile, record, WEAK_CANDIDATE_PROOF_PAGES if weak else MAX_PROOF_PAGES, effective_timeout,
+                                            **({"extra_urls": [hint]} if hint else {}))
             metrics["requests"] += pm["requests"]
             if (record.get("value") or {}).get("pages"):
                 gated = apply_website_identity_gate(profile, record)
                 assessment = gated["assessment"] or {}
             ok = _accept_proof(proof, assessment, method, profile)
+            if exact_only:
+                ok = bool(proof and proof.startswith("exact organisation number"))
             if ok:
                 exact = proof.startswith("exact organisation number")
                 assessment["publishable"] = True
@@ -461,7 +474,9 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
                 break
             continue
         record["source_type"] = record["source_class"] = "discovered_company_website"
-        record["note"] = (f"Discovered via {method}; identity: {'; '.join(assessment.get('reasons', []))}. "
+        source = ("candidate from the declared Common Crawl discovery index, identity verified live"
+                  if method == "discovery_index" else f"Discovered via {method}")
+        record["note"] = (f"{source}; identity: {'; '.join(assessment.get('reasons', []))}. "
                           "Company-controlled claim layer; not an official registry fact.")
         return record, metrics
     metrics["transient"] += _transient_count() - net_errors_before
@@ -543,6 +558,7 @@ def hard_identity_proof(
     website: dict[str, Any],
     max_pages: int = MAX_PROOF_PAGES,
     timeout: float = 8.0,
+    extra_urls: list[str] | None = None,
 ) -> tuple[str | None, dict[str, int]]:
     """Exact org number, or registered street address + postcode. Phone/leader matches are NOT proof (sister companies share them).
 
@@ -561,6 +577,12 @@ def hard_identity_proof(
     org_re = re.compile(rf"(?<!\d){org}(?!\d)") if len(org) == 9 else None
     seen: set[str] = set()
     queue = [base]
+    host = parsed.netloc.lower().removeprefix("www.")
+    # Pages already known to carry the org number (crawl cache), same site only, right after the homepage
+    for extra in extra_urls or []:
+        extra_host = (urllib.parse.urlparse(extra).hostname or "").lower().removeprefix("www.")
+        if host and (extra_host == host or extra_host.endswith("." + host) or host.endswith("." + extra_host)):
+            queue.append(extra)
     fetched = 0
     first_html = None
     foreign_org_seen = False
