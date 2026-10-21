@@ -25,17 +25,41 @@ def slim(envelope: dict) -> dict:
         "modules": {k: (v or {}).get("state") for k, v in (envelope.get("modules") or {}).items()},
         "claims": [
             {"f": c.get("field"), "v": c.get("value"), "s": c.get("availability"), "c": c.get("confidence"), "e": c.get("evidence_ids") or [],
-             **({"m": f"{c['metric']} {c.get('accounts_year') or ''}".strip()} if c.get("metric") else {})}
+             **({"m": f"{c['metric']} {c.get('accounts_year') or ''}".strip()} if c.get("metric") else {}),
+             **({"md": c["method"]} if c.get("method") else {})}
             for c in envelope.get("claims") or []
         ],
-        "evidence": [{k: e.get(k) for k in KEEP_ENV} for e in envelope.get("evidence") or []],
+        # Many claims cite the same source record; each distinct source is stored once ("src") and evidence rows point
+        # to it by index ("ev" = [id, index]). The page expands them on load, so it shows exactly the same evidence.
+        **_packed_evidence(envelope.get("evidence") or []),
         "changes": envelope.get("changes") or [],
         "errors": envelope.get("errors") or [],
         "website_note": website_ev.get("note"),
         "run": envelope.get("run") or {},
         "ops": envelope.get("operations") or {},
-        "syn": envelope.get("synthesis") or {},
+        "syn": _viewer_synthesis(envelope.get("synthesis") or {}),
     }
+
+
+def _packed_evidence(evidence: list[dict]) -> dict:
+    sources: list[list] = []
+    index: dict[tuple, int] = {}
+    rows = []
+    for e in evidence:
+        key = tuple(e.get(k) for k in KEEP_ENV if k != "id")
+        if key not in index:
+            index[key] = len(sources)
+            sources.append(list(key))
+        rows.append([e.get("id"), index[key]])
+    return {"src": sources, "ev": rows}
+
+
+# Synthesis statements the page shows (summary panel); the rest repeat the sections and are left out of the page.
+VIEWER_TOPICS = {"assessment", "conclusion", "trend", "news", "hiring", "finances"}
+
+
+def _viewer_synthesis(syn: dict) -> dict:
+    return {**syn, "statements": [s for s in syn.get("statements") or [] if s.get("topic") in VIEWER_TOPICS]}
 
 
 def build(envelopes: list[dict]) -> str:
@@ -129,7 +153,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 .btn{font:inherit;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);border-radius:8px;padding:9px 16px;min-height:44px;cursor:pointer}
 .btn.sec{background:transparent;color:var(--accent)}
 details{margin:6px 0}
-summary{cursor:pointer;min-height:32px}
+summary{cursor:pointer;min-height:44px;display:flex;align-items:center}
 .sr{position:absolute;left:-9999px}
 ul.plain{margin:0;padding-left:18px}
 .empty{color:var(--muted);font-style:italic}
@@ -150,6 +174,8 @@ ul.plain{margin:0;padding-left:18px}
 <script>
 "use strict";
 const DATA = JSON.parse(document.getElementById("data").textContent);
+const SRC_KEYS = ["source_url", "source_class", "retrieved_at", "content_sha256"];
+DATA.forEach(d => { d.evidence = (d.ev || []).map(([id, i]) => Object.assign({id}, ...SRC_KEYS.map((k, j) => ({[k]: d.src[i][j]})))); delete d.ev; delete d.src; });
 const BY = new Map(DATA.map(d => [d.org, d]));
 const app = document.getElementById("app");
 const nok = new Intl.NumberFormat("nb-NO", {maximumFractionDigits: 0});
@@ -278,7 +304,11 @@ function summary(d){
   const r = activeRoles(d); if (r.length) add(r.length + " current roles are registered, for example " + r.slice(0,2).map(x => (Array.isArray(x.name) ? x.name.join(" ") : x.name) + " (" + x.role + ")").join(" and ") + ".", refs(d, claim(d,"roles")?.e));
   const site = val(d,"official_website");
   const wc = claim(d,"official_website"); const weak = site && wc.c != null && wc.c < 0.9;
-  add(site ? (weak ? "The registry lists this website, but the page does not confirm it belongs to this exact company (it may be a brand, franchise or shared site): " : "A website was matched to this company: ") : "No website could be verified for this company. ", site ? link(site) : "", refs(d, wc?.e));
+  const declared = val(d,"registry_website");
+  if (site && wc.md === "registry_declared") add("The register lists this website; our own page check could not reach it, so nothing from the site is shown: ", link(site), refs(d, wc?.e));
+  else if (site) add(weak ? "The registry lists this website, but the page does not confirm it belongs to this exact company (it may be a brand, franchise or shared site): " : "A website was matched to this company: ", link(site), refs(d, wc?.e));
+  else if (declared) add("The register lists " + declared + " as its website, but those pages do not prove this exact company, so nothing from them is shown.", refs(d, claim(d,"registry_website")?.e));
+  else add("No website could be verified for this company. ", refs(d, wc?.e));
   const act = activity(d); if (act.length){ const latest = act.map(x => x.date).filter(Boolean).sort().pop(); add(act.length + " dated public items were found on the company site; the latest is dated " + latest + ".", refs(d, claim(d,"external_footprint")?.e)); }
   (syn.statements || []).filter(x => x.topic === "trend" || x.topic === "news" || x.topic === "hiring" || (x.topic === "finances" && /equity ratio|as submitted/i.test(x.text))).forEach(x => add(x.text, refs(d, x.evidence_ids)));
   if ((syn.signals || []).length) p.append(el("p", {}, el("strong", {text:"Signals: "}), syn.signals.map((x, i) => el("span", {}, i ? "; " : "", x.text, refs(d, x.evidence_ids)))));
@@ -306,12 +336,13 @@ function exportProfile(d){
     el("button", {class:"btn sec", type:"button", text:"Download profile (JSON)", onclick:() => download(d.org + ".json", JSON.stringify(d, null, 2), "application/json")}));
 }
 function unknowns(d){
+  // Same list as the synthesis "What is unknown" section, one line per item with its reason and the source that was checked.
+  const syn = ((d.syn || {}).unknowns || []);
+  const box = el("div", {class:"panel"}, el("h2", {text:"Unknowns: reasons and checked sources"}));
+  if (syn.length){ box.append(el("ul", {class:"plain"}, syn.map(u => el("li", {}, el("strong", {text:u.label + ": "}), STATE_TEXT[u.availability] || u.availability, ". ", u.reason.charAt(0).toUpperCase() + u.reason.slice(1) + ".", refs(d, u.evidence_ids))))); return box; }
   const rows = FIELDS.filter(f => claim(d,f) && claim(d,f).s !== "available");
-  const box = el("div", {class:"panel"}, el("h2", {text:"What is unknown"}));
   if (!rows.length){ box.append(el("p", {class:"empty", text:"Every tracked field was found."})); return box; }
-  // Cite the source that was checked: the claim's own evidence, else the synthesis unknown's checked-source evidence.
-  const checked = f => { const u = ((d.syn || {}).unknowns || []).find(x => x.field === f); return u ? u.evidence_ids : []; };
-  box.append(el("ul", {class:"plain"}, rows.map(f => { const c = claim(d,f); return el("li", {}, el("strong", {text:LABEL[f] + ": "}), STATE_TEXT[c.s] || c.s, ". ", c.s === "blocked" ? (d.website_note || "The source refused the request.") : NOT_FOUND_WHY[f], refs(d, (c.e || []).length ? c.e : checked(f))); })));
+  box.append(el("ul", {class:"plain"}, rows.map(f => { const c = claim(d,f); return el("li", {}, el("strong", {text:LABEL[f] + ": "}), STATE_TEXT[c.s] || c.s, ". ", c.s === "blocked" ? (d.website_note || "The source refused the request.") : NOT_FOUND_WHY[f], refs(d, c.e)); })));
   return box;
 }
 function factsTable(d){
@@ -364,10 +395,10 @@ function activityPanel(d){
   return box;
 }
 function changesPanel(d){
-  const box = el("div", {class:"panel"}, el("h2", {text:"What changed"}));
-  if (!d.changes.length) box.append(el("p", {text:"No earlier snapshot was supplied, so this run is the baseline. On later runs, changed fields are listed here and the earlier evidence is kept."}));
-  else box.append(el("ul", {class:"plain"}, d.changes.map(c => el("li", {text:typeof c === "string" ? c : JSON.stringify(c)}))));
-  return box;
+  // The "What changed" section above already states the baseline; this panel lists field-by-field changes when a previous run exists.
+  if (!d.changes.length) return null;
+  return el("div", {class:"panel"}, el("h2", {text:"Changes since the previous run, field by field"}),
+    el("ul", {class:"plain"}, d.changes.map(c => el("li", {text:typeof c === "string" ? c : JSON.stringify(c)}))));
 }
 function evidencePanel(d){
   const det = el("details", {id:"evidence"}, el("summary", {text:"Evidence (" + d.evidence.length + " sources)"}));
