@@ -69,6 +69,7 @@ class JobFeed:
         self.requests = 0
         self.error: str | None = None
         self.retrieved_at: str | None = None
+        self.index_sha256: str | None = None
         self.ads: list[dict[str, Any]] = []
         self._exact: dict[str, list[int]] = {}
         self._by_token: dict[str, set[int]] = {}
@@ -128,6 +129,9 @@ class JobFeed:
                         latest[uuid] = entry
                 path = body.get("next_url")
             self.ads = [e for e in latest.values() if e.get("status") == "ACTIVE" and e.get("businessName")]
+            # Hash of exactly what is searched (ad id + employer name of every active ad), so "no ad found" cites a fixed snapshot.
+            index = sorted([str(e.get("uuid")), str(e.get("businessName"))] for e in self.ads)
+            self.index_sha256 = hashlib.sha256(json.dumps(index, ensure_ascii=False).encode("utf-8")).hexdigest()
             for i, ad in enumerate(self.ads):
                 self._exact.setdefault(norm(ad["businessName"]), []).append(i)
                 for t in tokens(ad["businessName"]):
@@ -275,7 +279,9 @@ def fetch_jobs(profile: dict[str, Any], feed: JobFeed) -> dict[str, Any]:
     jobs.sort(key=lambda j: str(j.get("published") or ""), reverse=True)
     if not jobs:
         return evidence("nav_jobs", "not_found", "official_job_feed", FEED + "/api/v1/feed", retrieved_at=feed.retrieved_at,
-                        note=f"No active NAV ad names organisation number {org} or one of its sub-units.")
+                        content_sha256=feed.index_sha256,
+                        note=f"No active NAV ad names organisation number {org} or one of its sub-units "
+                             f"({len(feed.ads)} active ads checked; hash = active-ad index of uuid and employer).")
     value = {"job_postings": jobs, "ads_checked": len(feed.ads)}
     return evidence("nav_jobs", "available", "official_job_feed", FEED + "/api/v1/feed", value=value, retrieved_at=feed.retrieved_at,
                     content_sha256=hashlib.sha256(json.dumps(jobs, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),

@@ -87,6 +87,28 @@ class Synthesis(unittest.TestCase):
         self.assertIn("rule-based", a["text"])
         self.assertTrue(a["evidence_ids"])
 
+    def test_verified_site_without_jobs_never_also_says_no_site(self):
+        env = envelope()
+        env["claims"] = [c for c in env["claims"] if c["field"] != "official_website"] + [
+            claim("official_website", "https://eksempel.no/", "ev-website"), claim("job_postings", None, "ev-nav_jobs")]
+        s = build_synthesis(env)
+        self.assertIn("A company-owned website is verified (https://eksempel.no/)", s["conclusion"])
+        self.assertNotIn("No company-owned website could be verified", s["conclusion"])
+
+    def test_what_changed_and_what_is_unknown_are_cited_sections(self):
+        env = envelope()
+        env["evidence"] = [{"id": i} for i in ("ev-registry_live", "ev-financials", "ev-roles", "ev-website", "ev-nav_jobs")]
+        by = {x["label"]: x for x in build_synthesis(env)["sections"]}
+        self.assertIn("first observation", by["What changed"]["text"])
+        self.assertIn("revenue +50% from 2024 to 2025", by["What changed"]["text"])
+        self.assertIn("ev-financials", by["What changed"]["evidence_ids"])
+        self.assertIn("auditor (the company has opted out of audit", by["What is unknown"]["text"])
+        self.assertTrue(by["What is unknown"]["evidence_ids"])
+        self.assertIn("ev-nav_jobs", by["Working here"]["evidence_ids"])
+        quiet = envelope()
+        quiet["claims"] = [c for c in quiet["claims"] if c["field"] != "annual_accounts"]
+        self.assertIn("No changes found in the sources checked", build_synthesis(quiet)["changes"])
+
     def test_missing_registry_gives_honest_headline(self):
         s = build_synthesis({"organisation_number": "999999999", "claims": [], "changes": []})
         self.assertEqual(s["statements"], [])
@@ -149,7 +171,8 @@ class FiveAreas(unittest.TestCase):
         env["claims"][[c["field"] for c in env["claims"]].index("workforce_fte")]["period"] = {"accounts_year": "2025"}
         s = build_synthesis(env)
         self.assertEqual([x["label"] for x in s["sections"]],
-                         ["Company brief", "Latest financials", "Who runs it?", "Working here", "Recent activity"])
+                         ["Company brief", "Latest financials", "Who runs it?", "Working here", "Recent activity",
+                          "What changed", "What is unknown"])
         by = {x["label"]: x for x in s["sections"]}
         self.assertIn('"Butikk i kjeden Eksempel"', by["Company brief"]["text"])
         self.assertIn("ev-registry_live", by["Company brief"]["evidence_ids"])

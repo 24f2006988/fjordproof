@@ -63,7 +63,10 @@ REGISTRY_KEYS = {
     "vat_register_date": "registreringsdatoMerverdiavgiftsregisteret",
     "forced_dissolution": "underTvangsavviklingEllerTvangsopplosning", "part_of_group": "erIKonsern",
     "statutes_date": "vedtektsdato", "written_standard": "maalform", "registered_mobile": "mobil",
+    "registry_website": "hjemmeside",
 }
+# Website states where the declared homepage could not be checked at all (nothing contradicts the registry entry)
+UNCHECKED_SITE = {"source_error", "blocked", "budget_exhausted", "not_fetched"}
 # live registry_live key -> bulk snapshot key, for the extra registry claims
 REGISTRY_EXTRA = {
     "registered_activity": None, "statutory_purpose": None, "sector": "institusjonellSektorkode",
@@ -213,6 +216,10 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     phone = live_rec.get("phone") or raw_rec.get("telefon") or raw_rec.get("mobil")
     scalar("registered_email", email)
     scalar("registered_phone", phone)
+    # The homepage the company itself declares in the register: a registry fact, published whether or not our own
+    # page check could prove or reach the site (official_website below stays reserved for proven sites).
+    declared_site = live_rec.get("website") or raw_rec.get("hjemmeside")
+    scalar("registry_website", declared_site)
     cap = live_rec.get("share_capital") or ({"amount": float(raw_rec["kapital.belop"]), "currency": raw_rec.get("kapital.valuta", "NOK"), "shares": raw_rec.get("kapital.antallAksjer")} if "kapital.belop" in raw_rec else None)
     scalar("share_capital", cap, raw=live_rec.get("share_capital") or bulk_group("kapital"))
     scalar("incorporation_date", live_rec.get("incorporation_date") or raw_rec.get("stiftelsesdato"))
@@ -608,6 +615,14 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         ev_ids = [f"ev-{module}"]
         if availability == "available" and module in MODULE_SPANS:
             ev_ids = cite(module, field, MODULE_SPANS[module](org, value or {}))
+        if module == "website" and rec.get("status") in UNCHECKED_SITE and declared_site and ident_ok:
+            # Our page check never reached the declared homepage (timeout, robots, budget): publish the company's own
+            # register entry as its website, cited to the register, with lower confidence than a proven site.
+            claims.append({"field": field, "value": declared_site, "availability": "available", "confidence": 0.6,
+                           "method": "registry_declared", "raw_value": declared_site, "source_path": f"{datasets[ident]}.hjemmeside",
+                           "evidence_ids": cite(ident, "official_website", f"{register} {org}: hjemmeside = {_lit(declared_site)}"),
+                           "note": f"declared in the register; our own page check could not reach it ({rec.get('status')})"})
+            continue
         claims.append(
             {
                 "field": field,
@@ -699,7 +714,8 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     # The same external facts in the starter kit's observation schema (platform / signal_type / identity proof).
     envelope["external_observations"] = build_observations(
         org, records, web_ok=web_ok, fp_ok=fp_ok, news=news if fp_ok else [], site_jobs=site_jobs, nav_jobs=nav_jobs,
-        wf_present=wf_present, employees=profile.get("employees"), employees_ok=ident_ok)
+        wf_present=wf_present, employees=profile.get("employees"), employees_ok=ident_ok,
+        declared_site=declared_site, reg_ok=ident == "registry_live" and ident_ok)
     envelope["evidence"] = evidence
     envelope["errors"] = errors
     envelope["operations"] = {

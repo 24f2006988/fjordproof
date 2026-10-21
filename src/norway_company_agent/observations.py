@@ -23,7 +23,7 @@ def _obs(org: str, kind: str, key: Any, **fields: Any) -> dict[str, Any]:
 
 def build_observations(org: str, records: dict[str, dict[str, Any]], *, web_ok: bool, fp_ok: bool, news: list[dict[str, Any]],
                        site_jobs: list[dict[str, Any]], nav_jobs: list[dict[str, Any]], wf_present: bool,
-                       employees: Any, employees_ok: bool) -> list[dict[str, Any]]:
+                       employees: Any, employees_ok: bool, declared_site: str | None = None, reg_ok: bool = False) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     web = records.get("website") or {}
     fp = records.get("external_footprint") or {}
@@ -41,6 +41,14 @@ def build_observations(org: str, records: dict[str, dict[str, Any]], *, web_ok: 
                         or [{"type": "website_identity", "value": assess.get("status")}],
                         acquisition_mode="permitted_public_page", source_class="company_owned_site",
                         evidence_span=str((web.get("value") or {}).get("title") or site)[:240], strategy="company_site_identity"))
+    elif declared_site and reg_ok:
+        # Not proven on its own pages, but declared by the company in the register: the register record is the source.
+        reg = records.get("registry_live") or {}
+        out.append(_obs(org, "declaredsite", declared_site, platform="company_site", signal_type="company_profile",
+                        source_url=reg.get("source_url"), retrieved_at=reg.get("retrieved_at"), content_sha256=reg.get("content_sha256"),
+                        identity_proof=[{"type": "official_registry_declared_homepage", "value": declared_site}],
+                        acquisition_mode="official_api", source_class="official_registry", website=declared_site,
+                        evidence_span=f"Brreg Enhetsregisteret {org}: hjemmeside = {declared_site}", strategy="registry_declared_website"))
     if fp_ok:
         site = web.get("source_url")
         for s in (fp.get("value") or {}).get("social_links") or []:

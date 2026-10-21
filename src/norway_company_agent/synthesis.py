@@ -266,7 +266,14 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
 
     # Online presence and dated activity (verified company-owned site only)
     site = val("official_website")
-    if site:
+    declared = val("registry_website")
+    declared_only = bool(site) and (claims.get("official_website") or {}).get("method") == "registry_declared"
+    if declared_only:
+        say("online", f"Website declared in the register: {site} (our own page check could not reach it).", "official_website")
+    elif declared and not site:
+        say("online", f"The register lists {declared} as the company's website; its pages do not prove this exact company, so nothing from it is published.",
+            "registry_website")
+    elif site:
         extras = []
         social = val("social_profiles") or []
         if social:
@@ -302,6 +309,9 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         sources = [i for i in c.get("evidence_ids") or [] if i in known_ev]
         if not sources:
             sources = [next(i for i in UNKNOWN_SOURCES.get(field, ()) + ("",) if not i or i in known_ev)]
+        if field == "official_website" and declared:
+            reason = f"the register lists {declared}, but its pages do not prove this exact company"
+            sources = list(dict.fromkeys(ev("registry_website") + sources))
         if field == "auditor" and state == "not_available" and val("audit_exemption"):
             reason = f"the company has opted out of audit (decision dated {val('audit_exemption')})"
             sources = list(dict.fromkeys(sources + ev("audit_exemption")))
@@ -317,15 +327,23 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     in_sources = ("Changes visible in the sources (filed accounts, role register): " + "; ".join(source_changes) + ".") if source_changes else ""
     if changes:
         fields = sorted({str(c.get("field")) for c in changes})
-        change_text = f"{len(changes)} material change{'s' if len(changes) != 1 else ''} since the previous run: {', '.join(fields)}." + (" " + in_sources if in_sources else "")
+        since = f"{len(changes)} material change{'s' if len(changes) != 1 else ''} since the previous run: {', '.join(fields)}."
     else:
-        change_text = (in_sources + " " if in_sources else "") + "No earlier snapshot of this agent to compare with; this run is the baseline and later runs report changes against it."
+        since = ("No changes since a previous run can be reported: this is the first observation of this company by this agent; "
+                 "this run is the baseline that later runs compare against.")
+    if not source_changes:
+        in_sources = "No changes found in the sources checked (filed accounts and role register) in the period covered."
+    change_text = since + " " + in_sources
+    if name:
+        say("changes", change_text, "annual_accounts", "roles", "annual_account_filings")
 
     # Overall assessment: a rule-based conclusion that only restates the cited facts above.
     status = val("insolvency_status") or {}
     if status.get("bankrupt") or status.get("liquidating"):
         assessment.insert(0, "bankruptcy or liquidation registered")
-    if site:
+    if declared_only:
+        assessment.append("website declared in the register, not reachable for checking")
+    elif site:
         assessment.append("verified company website")
     elif (claims.get("official_website") or {}).get("availability") in {"not_available", "ambiguous"}:
         assessment.append("no verified website")
@@ -365,15 +383,19 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
             parts.append(fin_summary + (f"; {revenue_change}" if revenue_change else "") + ".")
         elif (claims.get("annual_accounts") or {}).get("availability") == "not_available":
             parts.append("No filed annual accounts were found in the public accounts register.")
-        if site:
+        if site and declared_only:
+            parts.append(f"The register lists its website as {site}; our own page check could not reach it, so no website content is published.")
+        elif site:
             web = f"A company-owned website is verified ({site})"
             if news:
                 web += f", with dated news up to {news[0]['published_date']}"
             parts.append(web + ".")
+        elif declared:
+            parts.append(f"The register lists {declared} as its website, but those pages do not prove this exact company, so no website content is published.")
+        else:
+            parts.append("No company-owned website could be verified, so no website, social or news facts are published.")
         if jobs:
             parts.append(f"It advertises {len(jobs)} open job posting{'s' if len(jobs) != 1 else ''}.")
-        else:
-            parts.append("No company-owned website could be verified, so no website, social, news or job facts are published.")
         if unknowns:
             parts.append("Not established: " + ", ".join(u["label"].lower() for u in unknowns) + ".")
         conclusion = " ".join(parts)
@@ -391,10 +413,11 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     else:
         headline = statements[0]["text"] if statements else f"Organisation number {org}: no registry record could be read."
     # The five questions of the brief, each answered from the cited facts above or stated as not established.
-    def section(label: str, texts: list[str], fields: tuple[str, ...], missing: str) -> dict[str, Any]:
+    def section(label: str, texts: list[str], fields: tuple[str, ...], missing: str, extra: list[str] | None = None) -> dict[str, Any]:
         texts = [t for t in texts if t]
+        ids = ev(*fields) if texts else list(dict.fromkeys(i for u in unknowns for i in u["evidence_ids"]))[:3]
         return {"label": label, "answered": bool(texts), "text": " ".join(texts) if texts else missing,
-                "evidence_ids": ev(*fields) if texts else list(dict.fromkeys(i for u in unknowns for i in u["evidence_ids"]))[:3]}
+                "evidence_ids": list(dict.fromkeys(ids + [i for i in extra or [] if i in known_ev]))}
 
     def first(topic: str) -> str:
         return next((s["text"] for s in statements if s["topic"] == topic), "")
@@ -413,6 +436,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     fin_texts = [s["text"] for s in statements if s["topic"] in {"finances", "trend"}]
     run_texts = [s["text"] for s in statements if s["topic"] in {"leadership", "group"}]
     work = [first("size")]
+    work_fields: tuple[str, ...] = ("employees", "workforce_fte", "registered_workplaces_count", "job_postings")
     if jobs:
         work.append(first("hiring"))
     elif (claims.get("job_postings") or {}).get("availability") == "not_available":
@@ -438,10 +462,18 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
                                                  "latest_accounts_year"), "No filed annual accounts were found in the public accounts register."),
         section("Who runs it?", run_texts, ("ceo", "board_chair", "auditor", "audit_exemption", "roles", "group_structure"),
                 "No current roles are registered."),
-        section("Working here", work, ("employees", "workforce_fte", "registered_workplaces_count", "job_postings"),
-                "Neither a headcount, man-years nor an open job ad could be established."),
+        # "No open job ad" is a statement about the NAV feed, so it cites the feed record that was searched.
+        section("Working here", work, work_fields, "Neither a headcount, man-years nor an open job ad could be established.",
+                extra=["ev-nav_jobs"] if not jobs else None),
         section("Recent activity", [activity_line], ("news_items", "job_postings", "roles", "annual_account_filings"),
                 "No dated public activity was found."),
+        # The brief asks what changed and what remains unknown; both get their own cited section.
+        section("What changed", [change_text], ("annual_accounts", "roles", "annual_account_filings"), change_text),
+        {"label": "What is unknown", "answered": True,
+         "text": ("Not established from the checked sources: " + "; ".join(f"{u['label'].lower()} ({u['reason']})" for u in unknowns) + ".")
+         if unknowns else "Every area this agent checks was established from the sources.",
+         "evidence_ids": unknown_ev or ev("name"),
+         "items": [{"label": u["label"], "reason": u["reason"], "availability": u["availability"], "evidence_ids": u["evidence_ids"]} for u in unknowns]},
     ]
 
     return {

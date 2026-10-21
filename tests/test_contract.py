@@ -107,6 +107,38 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertEqual(claims["ceo"]["source_path"], "roller[123456789].rollegrupper.roller[type.kode=DAGL].person.navn")
         self.assertEqual(claims["site_email"]["raw_value"], "hei@eksempel.no")
 
+    def _declared_env(self, website_status, assessment=None):
+        profile = {
+            "organisation_number": "914416779", "name": "SKUDENES BRYGGERI AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
+            "evidence": {
+                "registry_live": evidence("registry_live", "available", "official_registry_live", "https://data.brreg.no/enhetsregisteret/api/enheter/914416779",
+                                          value={"website": "www.skudenesbryggeri.no"}, content_sha256="a" * 64),
+                "website": evidence("website", website_status, "registry_linked_company_website", "https://www.skudenesbryggeri.no/",
+                                    value={"title": "Bryggeri", "identity_assessment": assessment} if website_status == "available" else None,
+                                    note="URLError: timed out" if website_status == "source_error" else None),
+            },
+            "run_metrics": {"requests": 2, "latencies_ms": [10]},
+        }
+        env = terminal_envelope(profile, run_id="t", modules=["registry_live", "website"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z")
+        return to_contract(env)
+
+    def test_declared_homepage_is_a_registry_fact_and_stands_in_only_when_the_site_was_unreachable(self):
+        env = self._declared_env("source_error")
+        claims = {c["field"]: c for c in env["claims"]}
+        self.assertEqual(claims["registry_website"]["value"], "www.skudenesbryggeri.no")
+        self.assertEqual(claims["registry_website"]["source_path"], "enheter[914416779].hjemmeside")
+        site = claims["official_website"]
+        self.assertEqual((site["availability"], site["value"], site["method"]), ("available", "www.skudenesbryggeri.no", "registry_declared"))
+        self.assertLess(site["confidence"], 0.9)
+        self.assertIn("hjemmeside", next(e["claim_span"] for e in env["evidence"] if e["id"] == site["evidence_ids"][0]))
+        self.assertIn("declared in the register", " ".join(s["text"] for s in env["synthesis"]["statements"]).replace("Website declared", "declared"))
+        self.assertTrue(any(o.get("strategy") == "registry_declared_website" for o in env["external_observations"]))
+        # Fetched but not proven for this company: the register fact stays, the site is never published as the company's own.
+        unproven = {c["field"]: c for c in self._declared_env("available", {"publishable": False, "score": 0.3})["claims"]}
+        self.assertEqual(unproven["registry_website"]["availability"], "available")
+        self.assertEqual(unproven["official_website"]["availability"], "ambiguous")
+        self.assertIsNone(unproven["official_website"]["value"])
+
     def _care_of_env(self, reasons):
         profile = {
             "organisation_number": "816559472", "name": "TEAMTEC WASTE TO ENERGY AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
