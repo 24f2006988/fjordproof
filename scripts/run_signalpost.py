@@ -24,6 +24,7 @@ from norway_company_agent.budget import BudgetGuard  # noqa: E402
 from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.footprint_plus import discover_website, extract_footprint, paid_search_calls  # noqa: E402
+from norway_company_agent.workforce import configure as configure_ocr, download_copy  # noqa: E402
 from norway_company_agent.google_search import cost_per_call  # noqa: E402
 from norway_company_agent.nav_jobs import JobFeed, fetch_jobs  # noqa: E402
 from norway_company_agent import site_description  # noqa: E402
@@ -67,7 +68,9 @@ def main() -> None:
     p.add_argument("--max-runtime-seconds", type=float, default=2400.0, help="maximum wallclock runtime in seconds (default: 2400 = 40m)")
     p.add_argument("--max-requests", type=int, default=None, help="maximum outbound requests (default: batch scaled)")
     p.add_argument("--job-feed-days", type=int, default=60, help="days of the NAV job feed to read (active ads modified in this window)")
-    p.add_argument("--ocr-workers", type=int, default=max(1, min(4, (os.cpu_count() or 2) - 1)), help="threads reading man-years from filed annual-account copies")
+    # Half the cores as workers, each with its own 2-thread OCR engine: measured fastest on 12 cores (6 x 2: 77-84 s per 12 copies;
+    # one shared engine, 4 workers: 83-163 s; 4 x 3: 198 s), same values in every case.
+    p.add_argument("--ocr-workers", type=int, default=max(1, min(6, (os.cpu_count() or 2) // 2)), help="threads reading man-years from filed annual-account copies")
     a = p.parse_args()
     out = Path(a.outdir)
     profiles_path, env_path, report_path = out / "profiles.jsonl", out / "envelopes.jsonl", out / "run-report.json"
@@ -190,7 +193,7 @@ def main() -> None:
                                  note=f"{type(exc).__name__}"), 0
         profile["evidence"]["workforce"] = rec
         budget.record_requests(used)
-        profile["run_metrics"]["workforce_requests"] = used
+        profile["run_metrics"]["workforce_requests"] = profile["run_metrics"].get("workforce_requests", 0) + used
 
     def jobs(profile: dict) -> None:
         if budget.is_exhausted(safety_margin_seconds=240.0, safety_margin_requests=100):
@@ -202,6 +205,17 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001  never drop a company
             profile["evidence"]["nav_jobs"] = evidence("nav_jobs", "source_error", "official_job_feed", "https://pam-stilling-feed.nav.no",
                                                        note=type(exc).__name__)
+
+    # Annual-account copies for the man-year step download in the background now, while the job feed and website stages
+    # (network-bound) run; the OCR stage then reads them from memory. Each download is counted once, when it is made.
+    def prefetch(profile: dict) -> None:
+        year = str(profile.get("latest_submitted_accounts") or "")
+        if year and not budget.is_exhausted(safety_margin_seconds=600.0, safety_margin_requests=300):
+            _, used = download_copy(profile["organisation_number"], year)
+            budget.record_requests(used)
+            profile.setdefault("run_metrics", {})["workforce_requests"] = profile["run_metrics"].get("workforce_requests", 0) + used
+    prefetch_pool = ThreadPoolExecutor(2)
+    prefetch_jobs = [prefetch_pool.submit(prefetch, pr) for pr in profiles]
 
     # NAV ads first: their employer homepages become website candidates for discovery below.
     with ThreadPoolExecutor(8) as pool:
@@ -250,6 +264,8 @@ def main() -> None:
             list(pool.map(describe, profiles))
         report["site_description"] = {"model": site_description.model(), "cost_usd": round(model_cost, 6),
                                       "described": sum(pr["evidence"]["site_description"]["status"] == "available" for pr in profiles)}
+    prefetch_pool.shutdown(wait=False, cancel_futures=True)  # copies not fetched yet are downloaded by the OCR step itself
+    configure_ocr(a.ocr_workers)
     with ThreadPoolExecutor(a.ocr_workers) as pool:
         list(pool.map(workforce, profiles))
     completed = utc_now()

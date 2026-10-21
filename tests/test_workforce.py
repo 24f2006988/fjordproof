@@ -62,3 +62,23 @@ class WorkforceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrefetchedCopy(unittest.TestCase):
+    def test_copy_is_downloaded_once_and_counted_once(self):
+        from unittest import mock
+        from norway_company_agent import workforce as wf
+        wf._downloads.clear()
+
+        class Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b"%PDF-1.4 not really"
+        with mock.patch.object(wf, "_reserve_history_slot"), mock.patch.object(wf.urllib.request, "urlopen", return_value=Resp()) as get:
+            (raw, failed, _, _), used = wf.download_copy("123456789", "2025")   # prefetch: counted here
+            self.assertEqual((raw[:4], failed, used), (b"%PDF", None, 1))
+            rec, used2 = wf.fetch_workforce("123456789", "2025")              # OCR stage: from memory, not counted again
+            self.assertEqual(get.call_count, 1)
+            self.assertEqual(used2, 0)
+            self.assertEqual(rec["status"], "not_found")  # unreadable copy is not a fact
+        wf._downloads.clear()

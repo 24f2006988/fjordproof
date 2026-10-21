@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
 import threading
 import time
@@ -24,18 +25,25 @@ FTE = re.compile(r"^(\d{1,5})[.,](\d{2})$")
 MIN_CONFIDENCE = 0.9
 ZERO_FTE_MAX_WAGES = 100_000  # NOK; at or above this a printed 0.00 man-years is treated as an unfilled form default
 
-_engine = None
-_engine_lock = threading.Lock()
+# One OCR engine per worker thread, each with its share of the CPU cores. A single shared engine runs one page at a time
+# on its own thread pool, so parallel workers queued behind each other (measured: ~65 s per copy in a 4-worker run).
+_local = threading.local()
+_threads_per_engine = max(1, (os.cpu_count() or 4) // 4)
+
+
+def configure(workers: int) -> None:
+    """Split the machine's cores between the OCR workers (call before the OCR stage)."""
+    global _threads_per_engine
+    _threads_per_engine = max(1, (os.cpu_count() or 4) // max(1, workers))
 
 
 def _ocr_engine():
-    global _engine
-    with _engine_lock:
-        if _engine is None:
-            from rapidocr_onnxruntime import RapidOCR  # optional at import time: a missing engine is reported, never raised
+    engine = getattr(_local, "engine", None)
+    if engine is None:
+        from rapidocr_onnxruntime import RapidOCR  # optional at import time: a missing engine is reported, never raised
 
-            _engine = RapidOCR()
-        return _engine
+        engine = _local.engine = RapidOCR(intra_op_num_threads=_threads_per_engine, inter_op_num_threads=1)
+    return engine
 
 
 def _ocr(img, box=None) -> list[tuple[list, str, float]]:
@@ -98,42 +106,61 @@ def zero_contradiction(profile: dict[str, Any], year: str) -> str | None:
     return None
 
 
+_downloads: dict[tuple[str, str], tuple[bytes | None, str | None, str | None, str]] = {}
+_downloads_lock = threading.Lock()
+
+
+def download_copy(org: str, year: str) -> tuple[tuple[bytes | None, str | None, str | None, str], int]:
+    """((pdf bytes, failed status, note, retrieved_at), requests made now) for one filed annual-account copy, downloaded once per run.
+
+    The runner calls this ahead of time, while the website stage is busy, so the OCR stage does not wait on the network."""
+    key = (org, str(year))
+    with _downloads_lock:
+        if key in _downloads:
+            return _downloads[key], 0
+    url = BRREG_ACCOUNT_PDF.format(org=org, year=year)
+    _reserve_history_slot()  # same Brreg endpoint family as the filings list: ~30 request starts per minute
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "builderr-signalpost-poc/0.1 (+https://builderr.ai)"})
+        with urllib.request.urlopen(req, timeout=40) as response:
+            result = (response.read(), None, None, utc_now())
+    except urllib.error.HTTPError as exc:
+        result = (None, "not_found" if exc.code in {404, 410} else "source_error", f"HTTP {exc.code}", utc_now())
+    except Exception as exc:  # noqa: BLE001  network failure is reported per company
+        result = (None, "source_error", type(exc).__name__, utc_now())
+    with _downloads_lock:
+        _downloads[key] = result
+    return result, 1
+
+
 def fetch_workforce(org: str, year: str | None, profile: dict[str, Any] | None = None) -> tuple[dict[str, Any], int]:
     """Evidence record for the latest filed year's man-years, and the number of requests made."""
     if not year:
         return evidence("workforce", "not_found", "official_annual_account_copy", BRREG_ACCOUNT_PDF.format(org=org, year=""),
                         note="No filed annual-account year to read."), 0
     url = BRREG_ACCOUNT_PDF.format(org=org, year=year)
-    _reserve_history_slot()  # same Brreg endpoint family as the filings list: ~30 request starts per minute
     started = time.monotonic()
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "builderr-signalpost-poc/0.1 (+https://builderr.ai)"})
-        with urllib.request.urlopen(req, timeout=40) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        status = "not_found" if exc.code in {404, 410} else "source_error"
-        return evidence("workforce", status, "official_annual_account_copy", url, note=f"HTTP {exc.code}"), 1
-    except Exception as exc:  # noqa: BLE001  network failure is reported per company
-        return evidence("workforce", "source_error", "official_annual_account_copy", url, note=type(exc).__name__), 1
+    (raw, failed, note, retrieved), used = download_copy(org, year)  # used = 0 when the copy was prefetched (counted then)
+    if raw is None:
+        return evidence("workforce", failed or "source_error", "official_annual_account_copy", url, note=note), used
     sha = hashlib.sha256(raw).hexdigest()
-    retrieved = utc_now()
     try:
         result = read_fte(raw, org)
     except ImportError as exc:
         return evidence("workforce", "source_error", "official_annual_account_copy", url, note=f"OCR engine unavailable: {exc}",
-                        content_sha256=sha, retrieved_at=retrieved), 1
+                        content_sha256=sha, retrieved_at=retrieved), used
     except Exception as exc:  # noqa: BLE001  an unreadable PDF is not a fact
         return evidence("workforce", "not_found", "official_annual_account_copy", url, note=f"unreadable copy: {type(exc).__name__}",
-                        content_sha256=sha, retrieved_at=retrieved), 1
+                        content_sha256=sha, retrieved_at=retrieved), used
     if result.get("value") == 0 and profile is not None:
         conflict = zero_contradiction(profile, str(year))
         if conflict:
             result = {"value": None, "reason": conflict}
     if result.get("value") is None:
         return evidence("workforce", "not_found", "official_annual_account_copy", url, note=result.get("reason"),
-                        content_sha256=sha, retrieved_at=retrieved), 1
+                        content_sha256=sha, retrieved_at=retrieved), used
     value = {"full_time_equivalents": result["value"], "accounts_year": str(year), "page": result["page"],
              "span": result["span"], "ocr_confidence": result["confidence"],
              "elapsed_ms": int((time.monotonic() - started) * 1000)}
     return evidence("workforce", "available", "official_annual_account_copy", url, value=value, content_sha256=sha,
-                    retrieved_at=retrieved), 1
+                    retrieved_at=retrieved), used
