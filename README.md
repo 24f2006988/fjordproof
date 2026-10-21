@@ -122,56 +122,80 @@ Email the repository URL, run command, models/APIs and expected cost per 100-com
 
 ## Signalpost extension (this entry)
 
-One command (Python 3.12, `pip install -e .` deps from pyproject, no API keys, USD 0):
+One command (Python 3.12; `uv sync` installs the pinned dependencies; no API key needed, USD 0 without keys):
 
-    python scripts/run_signalpost.py --organisations batch.jsonl --bulk brreg-enheter.csv --run-id r1 --expected-count 100 --outdir out
+    uv sync && uv run python scripts/run_signalpost.py --organisations batch.jsonl --run-id r1 --expected-count 100 --outdir out
+    # optional: --bulk brreg-enheter.csv (otherwise each company is looked up live, ~1 extra request each)
     # refresh: add --previous out/envelopes.jsonl  (prior snapshot kept; material changes appear in envelope["changes"])
 
-Adds to the starter: (1) free website discovery for companies with no registry homepage, from the registry e-mail
-domain or name-slug guesses, published only with hard proof of the exact entity (organisation number, or registered
-street+postcode printed on the company's own pages); (2) `external_footprint` module from verified sites only:
-careers links, news pages, dated feed items, contact and company-owned social links.
+Adds to the starter (every external fact needs exact-entity proof; anything unproven is not published):
+1. Website discovery for companies without a registry homepage: registry e-mail domain, name-slug guesses, NAV employer homepages and a
+   declared Common Crawl candidate index (below). A site is published only with proof of the exact entity: the organisation number printed on
+   its own pages, the registered street address and postcode, or the unique-name rule (the domain is the whole distinctive legal name, the page
+   names the company as a company, no other organisation number is printed, the page has real content, and a Brreg name search finds no other
+   entity carrying that name).
+2. The homepage the company declares in the register is always published as `registry_website` (a registry fact). It stands in as
+   `official_website` (method `registry_declared`, confidence 0.6) only when our check could not reach an existing site (timeout, 403, robots),
+   never for a domain that does not resolve and never for housing co-operatives or condominiums (they list their manager's site).
+3. From identity-verified sites only: contact emails and phones, social profiles, careers pages, structured job ads, dated news items and the
+   site's own description, each with its page URL, SHA-256 and literal span.
+4. NAV job ads (official public job feed, `pam-stilling-feed.nav.no`) whose employer number is the company or one of its registered sub-units.
+5. Man-years (`workforce_fte`) read with OCR from the company's own filed annual-account copy (Brreg, scanned PDF): only the generated
+   NOTEOPPLYSNINGER page, only when its header shows the organisation number, and only a confidently read two-decimal value.
+6. Every fetched financial year and every registry field we fetch (activity text, statutory purpose, register dates, former names, secondary
+   industries, ...) as separate claims, plus `external_observations` in the starter kit's observation schema.
 
 ### Output format
 Each envelope keeps the starter's native fields (`state`, `modules`, `profile`) and also carries the `OUTPUT_CONTRACT.md` fields
 (`run`, `claims`, `evidence`, `changes`, `errors`, `operations`), added by `src/norway_company_agent/contract.py`.
-Every `available` claim cites `evidence_ids`; missing data is `not_available`/`blocked`/`failed`, never zero-filled.
+Every `available` claim cites `evidence_ids` and carries `raw_value` (the value as the source holds it) and `source_path` (where it sits,
+e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresultat`). Missing data is `not_available` / `blocked` / `failed` /
+`ambiguous`, never zero-filled.
 
-- `news_items` claim: article-level company news from the verified company-owned site only. Each item has `title`, direct `url`,
-  `published_date` and `date_kind` (where the date came from: the site's RSS/Atom feed, WordPress REST post date, JSON-LD
-  `datePublished`, `article:published_time`, or an `<article><time datetime>`). A sitemap `<lastmod>` is never used as a
-  publication date. Each item's evidence record points at the page or feed that contains it, with its SHA-256 and the literal span.
-- `synthesis` (top-level, per envelope, built by `src/norway_company_agent/synthesis.py`): `headline`, `statements` (identity, activity,
-  size, latest accounts and year-on-year trend, leadership, group, website, news, hiring), `signals` (e.g. `loss_making`,
-  `negative_equity`, `revenue_growth`, `revenue_decline`, `recent_news`, `hiring`), `unknowns` (field, state and the reason it is
-  unknown) and `changes` (summary of material changes since the previous run). Every statement and signal cites the `evidence_ids`
-  of the claims it is built from. It is generated deterministically from the claims; no model is used and nothing is inferred
-  beyond the claims.
+- `synthesis` (built by `src/norway_company_agent/synthesis.py`, deterministic, no model): `headline`, `conclusion`, seven cited `sections`
+  (Company brief, Latest financials, Who runs it?, Working here, Recent activity, What changed, What is unknown), `statements`, `signals` and
+  `unknowns` (each with its reason and the source that was checked). "What changed" reports changes since the previous run (or that this is the
+  first observation) and the changes visible inside the sources (year on year, role changes); every sentence cites the evidence it rests on.
+- `news_items`: article-level news from the verified site only (`title`, `url`, `published_date`, `date_kind`); a sitemap `<lastmod>` is never
+  used as a publication date.
 
 ### Submission facts
-- Run command (`--bulk` is optional; without it each company is looked up live in Brreg, about 1 extra request each): `uv sync && uv run python scripts/run_signalpost.py --organisations <batch.jsonl> [--bulk brreg-enheter.csv] --run-id <id> --expected-count <n> --outdir out`
-- Models/APIs: none (no LLM, no paid API). Sources: Brønnøysundregistrene open data (NLOD 2.0) and company-owned websites (robots.txt respected, public-URL guard).
-- Optional model step, off by default (no key = no request, no cost, envelopes unchanged): with `GEMINI_API_KEY` set (Builderr-supplied key;
-  model `gemini-2.5-flash-lite`, override with `GEMINI_MODEL`; `SIGNALPOST_LLM=off` disables it), the visible text of each identity-verified
-  company website is sent to the Gemini API, which picks up to three sentences describing what the company does. A sentence is published
-  (claim `company_description`) only if it occurs verbatim on that page; the model never supplies numbers, names or dates. One request per
-  verified site (~15 per 100 companies), about 2,000 input tokens each: roughly USD 0.003 per 100 companies, reported in `third_party_cost_usd`.
-- Registry claims also include every former name (`former_name`, from `historiskeNavn`, with the dates each was held) and
-  secondary industry codes (`secondary_industry`, `naeringskode2/3`), from the record already fetched (no extra request).
-- From identity-verified company websites only: every email on the site's own domain (or the registry's own address) and every
-  phone number (`contact_email`, `contact_phone`, one claim each with its page and literal span; web-agency credits skipped;
-  the contact page is always read, one request per verified site); social profiles whose handle spells the legal name or the
-  verified site's own domain name; and `company_description`, the site's own words (a homepage paragraph naming the company,
-  else its schema.org or meta description; with the optional Gemini step, model-selected sentences checked verbatim).
-- Every available claim carries `raw_value` (the value exactly as the source holds it) and `source_path` (where it sits in the source,
-  e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresultat` or `enheter[<org>].naeringskode1`).
-- Expected third-party cost: USD 0. Measured (smoke-023): 1,745 requests and ~8.4 min per 100 companies (limit per 100-company shard: 2,000 requests / 45 min).
-- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run smoke-023, contract format, 100/100 envelopes, validation passed, 141 tests pass).
+- Run command: `uv sync && uv run python scripts/run_signalpost.py --organisations <batch.jsonl> --run-id <id> --expected-count <n> --outdir out`
+- Without keys (the default): no model, no paid API, USD 0. Sources: Brønnøysundregistrene open data (NLOD 2.0: Enhetsregisteret, roles,
+  Regnskapsregisteret, annual-account copies), NAV's public job feed, and company-owned websites (robots.txt respected, public-URL guard).
+- Declared cache: `data/discovery_index.json.gz` (224 KB, built by `scripts/build_discovery_index.py` from Common Crawl CC-MAIN-2026-39 home,
+  contact, about and legal pages of .no domains). It holds candidate (domain, organisation number) pairs only, no facts; a site from it is
+  verified live like any other candidate. Off: `SIGNALPOST_DISCOVERY_CACHE=off`.
+- Off switch for the unique-name website rule: `SIGNALPOST_NAME_DOMAIN_PROOF=off`.
+- Libraries (pinned in `uv.lock`): rapidocr-onnxruntime (Apache-2.0), onnxruntime (MIT), pypdf (BSD-3-Clause), Pillow (MIT-CMU),
+  opencv-python-headless (Apache-2.0), beautifulsoup4 (MIT), lxml (BSD-3-Clause), trafilatura (Apache-2.0), extruct (BSD-3-Clause),
+  tldextract (BSD-3-Clause), pydantic (MIT).
+- OCR uses half the CPU cores as workers (`--ocr-workers`), each with its own 2-thread engine; annual-account copies download during the
+  website stage. A built-in budget guard stops new work before 40 minutes and 2,000 requests per run and still emits every envelope.
+- Measured (smoke-100 `r8-smoke2`, no keys, 12-core laptop): 100/100 envelopes, validation passed, 1,628 requests, 21 minutes, 0 uncited
+  claims, 12 verified websites, man-years for 70 companies. Limit per 100-company shard: 2,000 requests / 45 minutes / USD 10.
+- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r8-smoke2`, no keys).
+
+### Optional keys (all off by default; with no key: no request, no cost, identical output)
+If Builderr supplies a key for scoring, these steps switch on with no code change; each declares its cost per company in
+`operations.third_party_cost_usd` and in the run report.
+- `GEMINI_API_KEY`:
+  (a) website suggestions: Gemini (`GEMINI_DISCOVERY_MODEL`, default `gemini-3.5-flash-lite`) is asked for the company's own domain from its
+  public registry name, number, address and industry, with Google Search grounding when the key allows it (`SIGNALPOST_GEMINI_SEARCH=off`
+  disables search). Suggestions are only candidates: each must pass the same proof as any guessed domain. Off: `SIGNALPOST_GEMINI_DISCOVERY=off`;
+  `SIGNALPOST_GEMINI_MIN_INTERVAL=<seconds>` spaces calls for rate-limited keys. Declared cost: tokens plus USD 0.014 per Google Search query
+  (estimate).
+  (b) description: the visible text of each verified site is sent to Gemini (`GEMINI_MODEL`, default `gemini-3.5-flash-lite`), which picks up
+  to three sentences; a sentence is published only if it occurs verbatim on that page (~USD 0.003 per 100 companies). Off: `SIGNALPOST_LLM=off`.
+- `GOOGLE_PLACES_API_KEY` (or `GOOGLE_SEARCH_API_KEY` + `GOOGLE_CSE_ID`), `BRAVE_SEARCH_API_KEY`: website candidates from Places / Custom Search /
+  Brave, same proof rule. Declared cost per call (estimates; override with `SIGNALPOST_SEARCH_COST_PER_CALL`): Places 0.035, Custom Search 0.005,
+  Brave 0.005 USD. Measured: a Places key added no verified site on a random 100-company sample.
 
 ## Profile viewer (UX)
 Every run also writes `<outdir>/site/index.html`: one static page (no server, no network) built from the envelopes by `scripts/build_site.py`.
-It has a searchable, filterable company list, a coverage summary for the batch, side-by-side comparison of up to four companies, and one
-profile per company (`#/<organisation number>`) with a plain-language summary, what is unknown and why, what changed since the previous run,
+It has a searchable, filterable company list, a coverage summary for the batch, side-by-side comparison of up to four companies (shareable
+link `#/compare/<org>,<org>`, CSV export), and one profile per company (`#/<organisation number>`) that opens with the seven cited synthesis
+sections, then a plain-language summary, unknowns with their reasons and checked sources, field-by-field changes since the previous run,
 annual accounts, roles, sub-units, group structure, dated public activity, and a table of every fact with its source link, retrieval date and
 SHA-256. Works on desktop and phone and follows the system light/dark setting. The page for the committed smoke test is `smoke/site/index.html`.
 Rebuild by hand: `python scripts/build_site.py --envelopes out/envelopes.jsonl --output out/site/index.html`.

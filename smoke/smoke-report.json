@@ -1,7 +1,7 @@
 {
-  "run_id": "smoke-035",
-  "started_at": "2026-10-18T05:54:13.188449Z",
-  "completed_at": "2026-10-18T06:09:51.915324Z",
+  "run_id": "r8-smoke2",
+  "started_at": "2026-10-21T12:29:30.541590Z",
+  "completed_at": "2026-10-21T12:50:16.001537Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -17,7 +17,8 @@
     "locations",
     "website",
     "external_footprint",
-    "workforce"
+    "workforce",
+    "nav_jobs"
   ],
   "registry": {
     "registry_snapshot_sha256": null,
@@ -28,11 +29,11 @@
     "bulk_note": "bulk snapshot not supplied"
   },
   "operations": {
-    "requests": 1416,
-    "bytes": 2293504,
-    "p50_ms": 1358,
-    "p95_ms": 1437,
-    "third_party_cost_usd": 0,
+    "requests": 1628,
+    "bytes": 2455212,
+    "p50_ms": 1203,
+    "p95_ms": 1516,
+    "third_party_cost_usd": 0.0,
     "budget_exhausted": false
   },
   "validation": {
@@ -46,6 +47,12 @@
     },
     "invalid_states": []
   },
-  "discovery_retries": 35,
+  "job_feed": {
+    "active_ads": 9352,
+    "requests": 152,
+    "error": null,
+    "days": 60
+  },
+  "discovery_retries": 27,
   "footprint_retries": 0
 }
