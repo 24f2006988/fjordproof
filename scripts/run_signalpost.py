@@ -23,9 +23,11 @@ from norway_company_agent.batch import terminal_envelope, validate_envelopes  # 
 from norway_company_agent.budget import BudgetGuard  # noqa: E402
 from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
-from norway_company_agent.footprint_plus import discover_website, extract_footprint, paid_search_calls  # noqa: E402
+from norway_company_agent.footprint_plus import discover_website, extract_footprint, model_discovery_cost, paid_search_calls  # noqa: E402
 from norway_company_agent.workforce import configure as configure_ocr, download_copy  # noqa: E402
 from norway_company_agent.google_search import cost_per_call  # noqa: E402
+from norway_company_agent.gemini_discovery import model as gemini_model  # noqa: E402
+from collections import Counter  # noqa: E402
 from norway_company_agent.nav_jobs import JobFeed, fetch_jobs  # noqa: E402
 from norway_company_agent import site_description  # noqa: E402
 from norway_company_agent.workforce import fetch_workforce  # noqa: E402
@@ -238,7 +240,10 @@ def main() -> None:
         pr.setdefault("run_metrics", {})
         paid = paid_search_calls(pr["organisation_number"])
         if paid:  # only with a search key set; declared as third-party cost in the envelope and the report
-            pr["run_metrics"]["paid_search_calls"] = paid
+            pr["run_metrics"]["paid_search_calls"] = {k: v for k, v in paid.items() if not k.startswith("gemini_")}
+            pr["run_metrics"]["model_discovery_calls"] = {k: v for k, v in paid.items() if k.startswith("gemini_")}
+        if model_discovery_cost(pr["organisation_number"]):
+            pr["run_metrics"]["model_discovery_cost_usd"] = model_discovery_cost(pr["organisation_number"])
 
     # Optional (GEMINI_API_KEY): sentences quoted from verified websites, chosen by a model and checked verbatim.
     # Without a key this adds no module, no request and no cost.
@@ -278,6 +283,12 @@ def main() -> None:
     report.update({"modules": modules, "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})
     report["operations"]["requests"] += plus_requests + feed.requests
     search_cost = sum(n * cost_per_call(prov) for pr in profiles for prov, n in (pr["run_metrics"].get("paid_search_calls") or {}).items())
+    search_cost += sum(pr["run_metrics"].get("model_discovery_cost_usd", 0.0) for pr in profiles)
+    gm_calls = sum(sum((pr["run_metrics"].get("model_discovery_calls") or {}).values()) for pr in profiles)
+    if gm_calls:
+        report["model_discovery"] = {"model": gemini_model(), "calls": gm_calls,
+                                     "modes": dict(Counter(m for pr in profiles for m in (pr["run_metrics"].get("model_discovery_calls") or {}))),
+                                     "cost_usd": round(sum(pr["run_metrics"].get("model_discovery_cost_usd", 0.0) for pr in profiles), 6)}
     report["operations"]["third_party_cost_usd"] = round(model_cost + search_cost, 6)
     if search_cost:
         report["paid_search"] = {"calls": sum(sum((pr["run_metrics"].get("paid_search_calls") or {}).values()) for pr in profiles),

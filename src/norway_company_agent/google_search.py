@@ -26,7 +26,7 @@ PLACES_ENDPOINT = "https://places.googleapis.com/v1/places:searchText"
 MAX_CANDIDATES = 3
 # Declared cost per paid search call (USD; list-price estimates, override with SIGNALPOST_SEARCH_COST_PER_CALL).
 # Places Text Search with the websiteUri field is billed at the Enterprise tier; Custom Search and Brave per query.
-COST_PER_CALL_USD = {"google_places": 0.035, "google_custom_search": 0.005, "brave_search": 0.005}
+COST_PER_CALL_USD = {"google_places": 0.035, "google_custom_search": 0.005, "brave_search": 0.005}  # Gemini: measured per call, see gemini_discovery
 
 
 def cost_per_call(provider: str) -> float:

@@ -22,7 +22,7 @@ from typing import Any
 from .evidence import evidence, utc_now
 from .identity import LEGAL_AND_GENERIC, _tokens
 
-DEFAULT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"  # 2.5 models are closed to new API keys (Oct 2026)
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 # USD per 1M tokens (Gemini 2.5 Flash-Lite paid tier, text input / output), used for the declared run cost.
 PRICE_PER_M_TOKENS = {"input": 0.10, "output": 0.40}

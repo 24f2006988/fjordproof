@@ -728,7 +728,8 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         "requests": int(metrics.get("requests", 0)) + int(metrics.get("plus_requests", 0)) + int(metrics.get("workforce_requests", 0)),
         "runtime_ms": int(sum(metrics.get("latencies_ms", []))),
         "third_party_cost_usd": round(float(desc_val.get("cost_usd") or 0)
-                                      + sum(n * cost_per_call(prov) for prov, n in (metrics.get("paid_search_calls") or {}).items()), 6) or 0,
+                                      + sum(n * cost_per_call(prov) for prov, n in (metrics.get("paid_search_calls") or {}).items())
+                                      + float(metrics.get("model_discovery_cost_usd") or 0), 6) or 0,
     }
     envelope.setdefault("changes", [])
     envelope["synthesis"] = build_synthesis(envelope)

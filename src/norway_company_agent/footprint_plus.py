@@ -20,7 +20,7 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
-from . import discovery_index
+from . import discovery_index, gemini_discovery
 from .evidence import evidence, utc_now
 from .google_search import google_candidate_hosts
 from .identity import LEGAL_AND_GENERIC, _structured_names, _tokens, apply_website_identity_gate, assess_social_identity
@@ -65,6 +65,8 @@ _SEARCH_CACHE_LOCK = threading.Lock()
 _GOOGLE_CANDIDATE_CACHE: dict[str, list[str]] = {}
 _BRAVE_CANDIDATE_CACHE: dict[str, list[str]] = {}
 PAID_SEARCH_CALLS: dict[str, dict[str, int]] = {}  # org -> provider -> paid search calls made this run (declared cost)
+MODEL_DISCOVERY_COST: dict[str, float] = {}  # org -> USD spent on Gemini website suggestions this run (declared cost)
+_GEMINI_CANDIDATE_CACHE: dict[str, list[str]] = {}
 
 
 def _paid_call(org: str, provider: str | None, calls: int) -> None:
@@ -79,12 +81,19 @@ def paid_search_calls(org: str) -> dict[str, int]:
         return dict(PAID_SEARCH_CALLS.get(org) or {})
 
 
+def model_discovery_cost(org: str) -> float:
+    with _SEARCH_CACHE_LOCK:
+        return MODEL_DISCOVERY_COST.get(org, 0.0)
+
+
 def clear_search_caches() -> None:
     """Clear per-run search candidate caches (used by tests)."""
     with _SEARCH_CACHE_LOCK:
         _GOOGLE_CANDIDATE_CACHE.clear()
         _BRAVE_CANDIDATE_CACHE.clear()
         PAID_SEARCH_CALLS.clear()
+        MODEL_DISCOVERY_COST.clear()
+        _GEMINI_CANDIDATE_CACHE.clear()
 
 
 def _brave_search_candidates(profile: dict[str, Any], api_key: str, timeout: float = 8.0) -> list[str]:
@@ -235,6 +244,20 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     for g_host in g_hosts:
         out.append((g_host, "google_search_candidate"))
 
+    # 2a'. Gemini website suggestions (once per company per run; off unless GEMINI_API_KEY is set). Candidates only.
+    if gemini_discovery.configured() and org_key:
+        with _SEARCH_CACHE_LOCK:
+            gm_hosts = _GEMINI_CANDIDATE_CACHE.get(org_key)
+        if gm_hosts is None:
+            gm_hosts, gm_reqs, gm_cost, gm_mode = gemini_discovery.candidate_hosts(profile)
+            search_reqs += gm_reqs
+            _paid_call(org_key, f"gemini_{gm_mode}" if gm_mode else None, gm_reqs)
+            with _SEARCH_CACHE_LOCK:
+                _GEMINI_CANDIDATE_CACHE[org_key] = list(gm_hosts)
+                MODEL_DISCOVERY_COST[org_key] = MODEL_DISCOVERY_COST.get(org_key, 0.0) + gm_cost
+        for gm_host in gm_hosts:
+            out.append((gm_host, "gemini_candidate"))
+
     # 2b. Brave Search candidate (if key present in env; once per company per run)
     brave_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
     if brave_key:
@@ -363,7 +386,8 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     for host, method in out:
         if host not in seen:
             seen.add(host)
-            if method in {"discovery_index", "registry_email_domain", "job_feed_homepage", "google_search_candidate", "brave_search_candidate"} or host.endswith(".no"):
+            if method in {"discovery_index", "registry_email_domain", "job_feed_homepage", "google_search_candidate", "brave_search_candidate",
+                          "gemini_candidate"} or host.endswith(".no"):
                 no_hosts.append((host, method))
             else:
                 other_hosts.append((host, method))
@@ -434,7 +458,7 @@ def _accept_proof(
 
 
 BRREG_NAME_SEARCH = "https://data.brreg.no/enhetsregisteret/api/enheter?"
-NAME_DOMAIN_METHODS = {"name_slug_guess", "brand_token_guess", "google_search_candidate", "brave_search_candidate"}
+NAME_DOMAIN_METHODS = {"name_slug_guess", "brand_token_guess", "google_search_candidate", "brave_search_candidate", "gemini_candidate"}
 NORWAY_SIGNAL_RE = re.compile(r"\+47|\b(?:norge|norway)\b|\b\d{4}\s+[A-ZÆØÅ][a-zæøå]{2,}", re.I)
 BIG_CITIES = {"oslo", "bergen", "trondheim", "stavanger", "drammen", "fredrikstad", "kristiansand", "sandnes", "tromso",
               "sarpsborg", "skien", "bodo", "alesund", "sandefjord", "larvik", "tonsberg", "moss", "haugesund", "arendal",
