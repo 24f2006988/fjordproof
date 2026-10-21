@@ -57,3 +57,22 @@ class GoogleSearch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PaidSearchCost(unittest.TestCase):
+    def test_places_calls_are_declared_as_cost(self):
+        from norway_company_agent import footprint_plus as fp
+        from norway_company_agent.contract import to_contract
+        from norway_company_agent.batch import terminal_envelope
+        from norway_company_agent.evidence import evidence
+        fp.clear_search_caches()
+        fp._paid_call("123456789", "google_places", 1)
+        self.assertEqual(fp.paid_search_calls("123456789"), {"google_places": 1})
+        profile = {"organisation_number": "123456789", "name": "Eksempel AS", "evidence": {
+            "registry_live": evidence("registry_live", "available", "official_registry_live", "https://data.brreg.no/x", value={})},
+            "run_metrics": {"requests": 1, "paid_search_calls": {"google_places": 1}}}
+        out = to_contract(terminal_envelope(profile, run_id="t", modules=["registry_live"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z"))
+        self.assertAlmostEqual(out["operations"]["third_party_cost_usd"], gs.cost_per_call("google_places"))
+        with env(SIGNALPOST_SEARCH_COST_PER_CALL="0.032"):
+            self.assertEqual(gs.cost_per_call("google_places"), 0.032)
+        fp.clear_search_caches()

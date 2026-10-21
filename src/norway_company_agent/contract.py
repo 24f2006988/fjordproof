@@ -6,6 +6,7 @@ import json
 import re
 from typing import Any
 
+from .google_search import cost_per_call
 from .observations import build_observations
 from .official import ACCOUNT_SCOPE, single_scope_accounts
 from .site_description import keyless_description
@@ -721,7 +722,8 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     envelope["operations"] = {
         "requests": int(metrics.get("requests", 0)) + int(metrics.get("plus_requests", 0)) + int(metrics.get("workforce_requests", 0)),
         "runtime_ms": int(sum(metrics.get("latencies_ms", []))),
-        "third_party_cost_usd": float(desc_val.get("cost_usd") or 0) or 0,
+        "third_party_cost_usd": round(float(desc_val.get("cost_usd") or 0)
+                                      + sum(n * cost_per_call(prov) for prov, n in (metrics.get("paid_search_calls") or {}).items()), 6) or 0,
     }
     envelope.setdefault("changes", [])
     envelope["synthesis"] = build_synthesis(envelope)

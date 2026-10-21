@@ -24,6 +24,17 @@ from .discovery import BLOCKED_DISCOVERY_HOSTS, _tokens
 CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
 PLACES_ENDPOINT = "https://places.googleapis.com/v1/places:searchText"
 MAX_CANDIDATES = 3
+# Declared cost per paid search call (USD; list-price estimates, override with SIGNALPOST_SEARCH_COST_PER_CALL).
+# Places Text Search with the websiteUri field is billed at the Enterprise tier; Custom Search and Brave per query.
+COST_PER_CALL_USD = {"google_places": 0.035, "google_custom_search": 0.005, "brave_search": 0.005}
+
+
+def cost_per_call(provider: str) -> float:
+    override = os.environ.get("SIGNALPOST_SEARCH_COST_PER_CALL", "").strip()
+    try:
+        return float(override) if override else COST_PER_CALL_USD.get(provider, 0.0)
+    except ValueError:
+        return COST_PER_CALL_USD.get(provider, 0.0)
 # Directories, registries, marketplaces and platforms: never a company-owned website.
 NOT_COMPANY_HOSTS = BLOCKED_DISCOVERY_HOSTS | {
     "brreg.no", "regnskapstall.no", "bedriftsdatabasen.no", "finn.no", "wikipedia.org", "google.com", "google.no",

@@ -13,6 +13,7 @@ import socket
 import threading
 import unicodedata
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -22,7 +23,7 @@ from bs4 import BeautifulSoup
 from . import discovery_index
 from .evidence import evidence, utc_now
 from .google_search import google_candidate_hosts
-from .identity import LEGAL_AND_GENERIC, _tokens, apply_website_identity_gate, assess_social_identity
+from .identity import LEGAL_AND_GENERIC, _structured_names, _tokens, apply_website_identity_gate, assess_social_identity
 from .nav_jobs import homepage_hosts
 from .website import (
     SAFE_OPENER,
@@ -63,6 +64,19 @@ BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 _SEARCH_CACHE_LOCK = threading.Lock()
 _GOOGLE_CANDIDATE_CACHE: dict[str, list[str]] = {}
 _BRAVE_CANDIDATE_CACHE: dict[str, list[str]] = {}
+PAID_SEARCH_CALLS: dict[str, dict[str, int]] = {}  # org -> provider -> paid search calls made this run (declared cost)
+
+
+def _paid_call(org: str, provider: str | None, calls: int) -> None:
+    if org and provider and calls:
+        with _SEARCH_CACHE_LOCK:
+            per = PAID_SEARCH_CALLS.setdefault(org, {})
+            per[provider] = per.get(provider, 0) + calls
+
+
+def paid_search_calls(org: str) -> dict[str, int]:
+    with _SEARCH_CACHE_LOCK:
+        return dict(PAID_SEARCH_CALLS.get(org) or {})
 
 
 def clear_search_caches() -> None:
@@ -70,6 +84,7 @@ def clear_search_caches() -> None:
     with _SEARCH_CACHE_LOCK:
         _GOOGLE_CANDIDATE_CACHE.clear()
         _BRAVE_CANDIDATE_CACHE.clear()
+        PAID_SEARCH_CALLS.clear()
 
 
 def _brave_search_candidates(profile: dict[str, Any], api_key: str, timeout: float = 8.0) -> list[str]:
@@ -213,6 +228,7 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     else:
         g_hosts, g_reqs, g_provider = google_candidate_hosts(profile, timeout=search_timeout)
         search_reqs += int(g_reqs or 0)
+        _paid_call(org_key, g_provider, int(g_reqs or 0))
         if org_key and (g_reqs or g_provider is not None or g_hosts):
             with _SEARCH_CACHE_LOCK:
                 _GOOGLE_CANDIDATE_CACHE[org_key] = list(g_hosts)
@@ -231,6 +247,7 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
         else:
             b_hosts = _brave_search_candidates(profile, brave_key, timeout=search_timeout)
             search_reqs += 1
+            _paid_call(org_key, "brave_search", 1)
             if org_key:
                 with _SEARCH_CACHE_LOCK:
                     _BRAVE_CANDIDATE_CACHE[org_key] = list(b_hosts)
@@ -411,6 +428,88 @@ def _accept_proof(
     return method not in STRICT_METHODS and assessment.get("score", 0) >= 0.85
 
 
+BRREG_NAME_SEARCH = "https://data.brreg.no/enhetsregisteret/api/enheter?"
+NAME_DOMAIN_METHODS = {"name_slug_guess", "brand_token_guess", "google_search_candidate", "brave_search_candidate"}
+NORWAY_SIGNAL_RE = re.compile(r"\+47|\b(?:norge|norway)\b|\b\d{4}\s+[A-ZÆØÅ][a-zæøå]{2,}", re.I)
+BIG_CITIES = {"oslo", "bergen", "trondheim", "stavanger", "drammen", "fredrikstad", "kristiansand", "sandnes", "tromso",
+              "sarpsborg", "skien", "bodo", "alesund", "sandefjord", "larvik", "tonsberg", "moss", "haugesund", "arendal",
+              "porsgrunn", "hamar", "lillestrom", "asker", "baerum", "lysaker", "sandvika"}
+PLACEHOLDER_RE = re.compile(r"lanseres snart|kommer snart|coming soon|launching soon|under construction|under (?:arbeid|oppbygging|utvikling)"
+                            r"|currently (?:not available|unavailable)|ikke tilgjengelig|domain (?:is )?for sale|parkert")
+
+
+def _fold(text: str) -> str:
+    """Lower-case ASCII with Norwegian letters spelled out (ø -> o, å -> a, æ -> ae), for name matching on page text."""
+    text = str(text or "").translate(str.maketrans({"ø": "o", "Ø": "O", "å": "a", "Å": "A", "æ": "ae", "Æ": "AE"}))
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().casefold()
+
+
+def _name_is_unique(profile: dict[str, Any], core: list[str], timeout: float) -> tuple[bool, int]:
+    """(no other registered entity carries every word of this legal name, requests). Any lookup failure counts as not unique."""
+    org = re.sub(r"\D", "", str(profile.get("organisation_number") or ""))
+    url = BRREG_NAME_SEARCH + urllib.parse.urlencode({"navn": " ".join(core), "size": 50})
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+    except Exception:  # noqa: BLE001  unknown means unsafe
+        return False, 1
+    hits = (body.get("_embedded") or {}).get("enheter") or []
+    others = [h for h in hits if h.get("organisasjonsnummer") != org and set(core) <= set(_tokens(h.get("navn")))]
+    return (not others and any(h.get("organisasjonsnummer") == org for h in hits)), 1
+
+
+def name_domain_proof(profile: dict[str, Any], record: dict[str, Any], method: str, timeout: float = 8.0) -> tuple[str | None, int]:
+    """Proof for a site that does not print the org number: its domain IS the company's whole distinctive legal name,
+    the legal name is printed in the page text, no other organisation number is printed, the site is Norwegian, and no
+    other registered entity carries every word of that name. Off with SIGNALPOST_NAME_DOMAIN_PROOF=off."""
+    if os.environ.get("SIGNALPOST_NAME_DOMAIN_PROOF", "").strip().casefold() in {"off", "0", "false", "no"}:
+        return None, 0
+    if method not in NAME_DOMAIN_METHODS or _is_care_of(profile):
+        return None, 0
+    core = _tokens(profile.get("name"))
+    compact = "".join(core)
+    if not core or len(compact) < 6 or set(core) & (STRUCTURAL_QUALIFIERS | GENERIC_SLUG_TOKENS) or all(t.isdigit() for t in core):
+        return None, 0
+    value = record.get("value") or {}
+    host = (urllib.parse.urlparse(value.get("final_url") or record.get("source_url") or "").hostname or "").casefold().removeprefix("www.")
+    label = "".join(_tokens(host.split(".")[0])) if host else ""
+    variants = {compact} | {"".join(_tokens(v)) for v in _slug_variants("".join(_raw_tokens(profile.get("name"))))}
+    if label not in variants:
+        return None, 0
+    pages = [value, *(value.get("pages") or [])]
+    page_text = " ".join(str(p.get(k) or "") for p in pages for k in ("title", "main_text_excerpt", "identity_text_excerpt"))
+    # The name must stand on the page AS the company's name, not as ordinary words ("et pent smil" is not PENT SMIL AS):
+    # either with its company-form suffix, or in the title / site name / footer / structured name next to the registered place.
+    name_re = r"(?<![a-z0-9])" + r"[\s\-.]*".join(re.escape(t) for t in core)
+    suffix_re = name_re + r"\s*,?\s+(?:as|asa|da|ans|sa|ba|nuf|enk)(?![a-z0-9])"
+    with_suffix = re.search(suffix_re, _fold(page_text))
+    marked = " ".join(str(p.get(k) or "") for p in pages for k in ("title", "identity_text_excerpt")) + " " + " ".join(
+        _structured_names(value.get("structured_organisations") or []))
+    home_text = str(value.get("main_text_excerpt") or "")
+    self_named = re.search(suffix_re, _fold(str(value.get("title") or "") + " " + " ".join(_structured_names(value.get("structured_organisations") or []))))
+    if PLACEHOLDER_RE.search(_fold(home_text + " " + str(value.get("title") or ""))) or (len(home_text.strip()) < 300 and not self_named):
+        return None, 0  # "launching soon", "not available", parked or near-empty pages prove nothing unless the site names the legal entity
+    targets = _extract_company_proof_targets(profile)
+    live_addr = ((profile.get("evidence") or {}).get("registry_live") or {}).get("value") or {}
+    place = str((live_addr.get("business_address") or {}).get("poststed") or "")
+    # A big city's name on a page proves no location; there only the registered postcode counts.
+    at_place = bool((targets["zipc"] and re.search(rf"(?<!\d){targets['zipc']}(?!\d)", page_text))
+                    or (len(place) >= 3 and _fold(place) not in BIG_CITIES and re.search(rf"(?<![a-z]){re.escape(_fold(place))}(?![a-z])", _fold(page_text))))
+    if not with_suffix and not (re.search(name_re + r"(?![a-z0-9])", _fold(marked)) and at_place):
+        return None, 0
+    allowed = _extract_company_proof_targets(profile)["allowed_orgs"]
+    if _has_foreign_labeled_org(page_text, allowed):
+        return None, 0
+    if not (host.endswith(".no") or NORWAY_SIGNAL_RE.search(page_text)):
+        return None, 0
+    unique, reqs = _name_is_unique(profile, core, timeout)
+    if not unique:
+        return None, reqs
+    return (f"domain {host} is the whole legal name, the legal name is printed on the site, no other organisation number "
+            f"is printed, and no other registered entity carries the name"), reqs
+
+
 def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout: float = 8.0) -> tuple[dict[str, Any] | None, dict[str, int]]:
     """First candidate host with hard proof of the exact entity, else None.
 
@@ -455,6 +554,11 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
             ok = _accept_proof(proof, assessment, method, profile)
             if exact_only:
                 ok = bool(proof and proof.startswith("exact organisation number"))
+            if not ok and not exact_only:
+                nd_proof, nd_reqs = name_domain_proof(profile, record, method, effective_timeout)
+                metrics["requests"] += nd_reqs
+                if nd_proof:
+                    proof, ok = nd_proof, True
             if ok:
                 exact = proof.startswith("exact organisation number")
                 assessment["publishable"] = True

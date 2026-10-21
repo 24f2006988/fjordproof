@@ -186,3 +186,53 @@ class HardProofTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameDomainProof(unittest.TestCase):
+    """Site without the org number: accepted only when the domain is the whole unique legal name, written on the page as the
+    company's name (with its AS suffix, or in title/footer next to the registered place), on a page with real content."""
+    FILLER = " Vi selger kvalitetsvarer og har lang erfaring. " * 8
+
+    def profile(self, name="SUPERMERCADO AS", address=None):
+        return {"organisation_number": "916361750", "name": name,
+                "evidence": {"registry_live": {"value": {"business_address": address or {"adresse": ["Storgata 1"], "postnummer": "2640", "poststed": "VINSTRA"}}}}}
+
+    def record(self, url, text, title=""):
+        return {"source_url": url, "value": {"final_url": url, "title": title, "main_text_excerpt": text + self.FILLER, "pages": []}}
+
+    def proof(self, profile, record, method="name_slug_guess", unique=True):
+        with mock.patch.object(footprint_plus, "_name_is_unique", return_value=(unique, 1)):
+            return footprint_plus.name_domain_proof(profile, record, method)[0]
+
+    def test_accepted(self):
+        sup = self.profile()
+        self.assertIsNotNone(self.proof(sup, self.record("https://supermercado.no/", "Velkommen til Supermercado AS, Norge.")))
+        # Title name plus the registered place (a small town) also counts.
+        self.assertIsNotNone(self.proof(sup, self.record("https://supermercado.no/", "Butikken ligger i Vinstra.", title="Supermercado")))
+        # A thin script-built page counts only when it names the legal entity itself.
+        wix = {"source_url": "https://www.wildgear.no/", "value": {"final_url": "https://www.wildgear.no/", "title": "New Page | Wild Gear AS",
+                                                                  "main_text_excerpt": "Menu", "pages": []}}
+        self.assertIsNotNone(self.proof(self.profile("WILD GEAR AS"), wix))
+
+    def test_ordinary_words_are_not_the_company_name(self):
+        # pentsmil.no is CC VEST TANNLEGESENTER AS (Oslo); PENT SMIL AS is a different practice in Vinstra.
+        page = self.record("https://www.pentsmil.no/", "For de fleste av oss er det viktig med et pent smil. Norge.", title="Pentsmil-no5")
+        self.assertIsNone(self.proof(self.profile("PENT SMIL AS"), page))
+
+    def test_rejections(self):
+        sup = self.profile()
+        page = "Velkommen til Supermercado AS, Norge."
+        self.assertIsNone(self.proof(sup, self.record("https://supermercado.no/", page), unique=False))  # another entity shares the name
+        self.assertIsNone(self.proof(sup, self.record("https://supermercado.no/", "Velkommen! Norge.")))  # name only in the address bar
+        self.assertIsNone(self.proof(sup, self.record("https://super-shop.no/", page)))  # domain is not the name
+        self.assertIsNone(self.proof(sup, self.record("https://supermercado.no/", page + " Org.nr 912 345 678")))  # foreign org number
+        self.assertIsNone(self.proof(sup, self.record("https://supermercado.no/", page + " Lanseres snart")))  # placeholder
+        self.assertIsNone(self.proof(sup, self.record("https://supermercado.no/", page), method="registry_email_domain"))
+        oslo = self.profile(address={"adresse": ["Gata 2"], "postnummer": "0855", "poststed": "OSLO"})
+        self.assertIsNone(self.proof(oslo, self.record("https://supermercado.no/", "Vi holder til i Oslo.", title="Supermercado")))  # big city
+        self.assertIsNone(self.proof(self.profile("FJELLGLØD HOLDING AS"), self.record("https://fjellglodholding.no/", "Fjellglød Holding AS")))
+        self.assertIsNone(self.proof(self.profile("MAXI AS"), self.record("https://maxi.no/", "Maxi AS")))  # too short to be distinctive
+        care_of = self.profile(address={"adresse": ["c/o Regnskap AS", "Gata 2"], "postnummer": "2640", "poststed": "VINSTRA"})
+        self.assertIsNone(self.proof(care_of, self.record("https://supermercado.no/", page)))
+        with mock.patch.dict("os.environ", {"SIGNALPOST_NAME_DOMAIN_PROOF": "off"}):
+            self.assertIsNone(self.proof(sup, self.record("https://supermercado.no/", page)))

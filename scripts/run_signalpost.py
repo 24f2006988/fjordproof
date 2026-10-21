@@ -23,7 +23,8 @@ from norway_company_agent.batch import terminal_envelope, validate_envelopes  # 
 from norway_company_agent.budget import BudgetGuard  # noqa: E402
 from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
-from norway_company_agent.footprint_plus import discover_website, extract_footprint  # noqa: E402
+from norway_company_agent.footprint_plus import discover_website, extract_footprint, paid_search_calls  # noqa: E402
+from norway_company_agent.google_search import cost_per_call  # noqa: E402
 from norway_company_agent.nav_jobs import JobFeed, fetch_jobs  # noqa: E402
 from norway_company_agent import site_description  # noqa: E402
 from norway_company_agent.workforce import fetch_workforce  # noqa: E402
@@ -221,6 +222,9 @@ def main() -> None:
     report["footprint_retries"] = len(fp_retry)
     for pr in profiles:
         pr.setdefault("run_metrics", {})
+        paid = paid_search_calls(pr["organisation_number"])
+        if paid:  # only with a search key set; declared as third-party cost in the envelope and the report
+            pr["run_metrics"]["paid_search_calls"] = paid
 
     # Optional (GEMINI_API_KEY): sentences quoted from verified websites, chosen by a model and checked verbatim.
     # Without a key this adds no module, no request and no cost.
@@ -257,7 +261,11 @@ def main() -> None:
     plus_requests = sum(pr.get("run_metrics", {}).get("plus_requests", 0) + pr.get("run_metrics", {}).get("workforce_requests", 0) for pr in profiles)
     report.update({"modules": modules, "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})
     report["operations"]["requests"] += plus_requests + feed.requests
-    report["operations"]["third_party_cost_usd"] = round(model_cost, 6)
+    search_cost = sum(n * cost_per_call(prov) for pr in profiles for prov, n in (pr["run_metrics"].get("paid_search_calls") or {}).items())
+    report["operations"]["third_party_cost_usd"] = round(model_cost + search_cost, 6)
+    if search_cost:
+        report["paid_search"] = {"calls": sum(sum((pr["run_metrics"].get("paid_search_calls") or {}).values()) for pr in profiles),
+                                 "cost_usd": round(search_cost, 6)}
     report["operations"]["budget_exhausted"] = budget.is_exhausted(safety_margin_seconds=0, safety_margin_requests=0)
 
     write_jsonl(profiles_path, profiles)
