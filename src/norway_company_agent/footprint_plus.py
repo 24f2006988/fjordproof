@@ -355,6 +355,11 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     no_hosts: list[tuple[str, str]] = []
     other_hosts: list[tuple[str, str]] = []
     seen = set()
+    # The crawl index only moves a host up the list: if the same host is also an ordinary candidate (name guess, registry
+    # e-mail domain, ...), it keeps its place but is judged by that candidate's rule, not the stricter exact-only rule
+    # (rbproffpartner.no is proven by its registered address and was lost when the index listed it first).
+    other_method = {h: m for h, m in reversed(out) if m != "discovery_index"}
+    out = [(h, other_method.get(h, m)) if m == "discovery_index" else (h, m) for h, m in out]
     for host, method in out:
         if host not in seen:
             seen.add(host)
@@ -544,7 +549,7 @@ def discover_website(profile: dict[str, Any], max_tested_hosts: int = 3, timeout
         ok = False if exact_only else (bool(assessment.get("publishable")) if method in STRICT_METHODS else assessment.get("score") == 1.0)
         if not ok and (exact_only or assessment.get("score", 0) >= 0.3):
             weak = assessment.get("score", 0) < 0.5 and not exact_only
-            hint = index_pages.get(host) if exact_only else None
+            hint = index_pages.get(host)  # a crawled page of this host that printed the org number: also a proof page to read
             proof, pm = hard_identity_proof(profile, record, WEAK_CANDIDATE_PROOF_PAGES if weak else MAX_PROOF_PAGES, effective_timeout,
                                             **({"extra_urls": [hint]} if hint else {}))
             metrics["requests"] += pm["requests"]

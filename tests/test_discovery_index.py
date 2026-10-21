@@ -46,7 +46,10 @@ class DiscoveryIndexTests(unittest.TestCase):
             self.assertEqual(discovery_index.candidates(PROFILE), [])
 
     def test_index_host_is_first_candidate(self) -> None:
-        self.assertEqual(footprint_plus.candidate_hosts(PROFILE)[0], ("flexistore.no", "discovery_index"))
+        # First in line; flexistore.no is also a plain name guess for this company, so it is judged by that rule.
+        self.assertEqual(footprint_plus.candidate_hosts(PROFILE)[0], ("flexistore.no", "name_slug_guess"))
+        with mock.patch.object(discovery_index, "candidates", return_value=[("other-brand.no", "https://other-brand.no/x")]):
+            self.assertEqual(footprint_plus.candidate_hosts(PROFILE)[0], ("other-brand.no", "discovery_index"))
 
     def _discover(self, proof: str | None, publishable: bool = True):
         seen: dict = {}

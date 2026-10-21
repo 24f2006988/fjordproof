@@ -307,7 +307,7 @@ function summary(d){
   const declared = val(d,"registry_website");
   if (site && wc.md === "registry_declared") add("The register lists this website; our own page check could not reach it, so nothing from the site is shown: ", link(site), refs(d, wc?.e));
   else if (site) add(weak ? "The registry lists this website, but the page does not confirm it belongs to this exact company (it may be a brand, franchise or shared site): " : "A website was matched to this company: ", link(site), refs(d, wc?.e));
-  else if (declared) add("The register lists " + declared + " as its website, but those pages do not prove this exact company, so nothing from them is shown.", refs(d, claim(d,"registry_website")?.e));
+  else if (declared) add("The register lists " + declared + " as its website; it could not be confirmed as this company's own site, so nothing from it is shown.", refs(d, claim(d,"registry_website")?.e));
   else add("No website could be verified for this company. ", refs(d, wc?.e));
   const act = activity(d); if (act.length){ const latest = act.map(x => x.date).filter(Boolean).sort().pop(); add(act.length + " dated public items were found on the company site; the latest is dated " + latest + ".", refs(d, claim(d,"external_footprint")?.e)); }
   (syn.statements || []).filter(x => x.topic === "trend" || x.topic === "news" || x.topic === "hiring" || (x.topic === "finances" && /equity ratio|as submitted/i.test(x.text))).forEach(x => add(x.text, refs(d, x.evidence_ids)));

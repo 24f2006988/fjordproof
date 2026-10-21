@@ -271,7 +271,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     if declared_only:
         say("online", f"Website declared in the register: {site} (our own page check could not reach it).", "official_website")
     elif declared and not site:
-        say("online", f"The register lists {declared} as the company's website; its pages do not prove this exact company, so nothing from it is published.",
+        say("online", f"The register lists {declared} as the company's website; it could not be confirmed as this company's own site, so nothing from it is published.",
             "registry_website")
     elif site:
         extras = []
@@ -310,7 +310,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         if not sources:
             sources = [next(i for i in UNKNOWN_SOURCES.get(field, ()) + ("",) if not i or i in known_ev)]
         if field == "official_website" and declared:
-            reason = f"the register lists {declared}, but its pages do not prove this exact company"
+            reason = f"the register lists {declared}, but it could not be confirmed as this company's own site"
             sources = list(dict.fromkeys(ev("registry_website") + sources))
         if field == "auditor" and state == "not_available" and val("audit_exemption"):
             reason = f"the company has opted out of audit (decision dated {val('audit_exemption')})"
@@ -391,7 +391,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
                 web += f", with dated news up to {news[0]['published_date']}"
             parts.append(web + ".")
         elif declared:
-            parts.append(f"The register lists {declared} as its website, but those pages do not prove this exact company, so no website content is published.")
+            parts.append(f"The register lists {declared} as its website; it could not be confirmed as this company's own site, so no website content is published.")
         else:
             parts.append("No company-owned website could be verified, so no website, social or news facts are published.")
         if jobs:

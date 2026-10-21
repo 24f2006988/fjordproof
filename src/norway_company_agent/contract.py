@@ -66,8 +66,11 @@ REGISTRY_KEYS = {
     "statutes_date": "vedtektsdato", "written_standard": "maalform", "registered_mobile": "mobil",
     "registry_website": "hjemmeside",
 }
-# Website states where the declared homepage could not be checked at all (nothing contradicts the registry entry)
+# Website states where the declared homepage could not be checked at all (nothing contradicts the registry entry). A
+# domain that does not resolve is not "unchecked": it does not exist, so it never stands in as the website.
 UNCHECKED_SITE = {"source_error", "blocked", "budget_exhausted", "not_fetched"}
+# Housing co-operatives and condominiums usually list their manager's site (tnbbl.no for a borettslag): register fact only.
+MANAGED_FORMS = {"BRL", "ESEK", "SAM", "BBL"}
 # live registry_live key -> bulk snapshot key, for the extra registry claims
 REGISTRY_EXTRA = {
     "registered_activity": None, "statutory_purpose": None, "sector": "institusjonellSektorkode",
@@ -616,7 +619,9 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         ev_ids = [f"ev-{module}"]
         if availability == "available" and module in MODULE_SPANS:
             ev_ids = cite(module, field, MODULE_SPANS[module](org, value or {}))
-        if module == "website" and rec.get("status") in UNCHECKED_SITE and declared_site and ident_ok:
+        site_exists = not re.search(r"did not resolve|no valid registry website|getaddrinfo|name or service not known|nodename", str(rec.get("note") or ""), re.I)
+        if (module == "website" and rec.get("status") in UNCHECKED_SITE and declared_site and ident_ok and site_exists
+                and str(profile.get("legal_form") or "").upper() not in MANAGED_FORMS):
             # Our page check never reached the declared homepage (timeout, robots, budget): publish the company's own
             # register entry as its website, cited to the register, with lower confidence than a proven site.
             claims.append({"field": field, "value": declared_site, "availability": "available", "confidence": 0.6,

@@ -236,3 +236,11 @@ class NameDomainProof(unittest.TestCase):
         self.assertIsNone(self.proof(care_of, self.record("https://supermercado.no/", page)))
         with mock.patch.dict("os.environ", {"SIGNALPOST_NAME_DOMAIN_PROOF": "off"}):
             self.assertIsNone(self.proof(sup, self.record("https://supermercado.no/", page)))
+
+
+class CrawlIndexOnlyRaisesPriority(unittest.TestCase):
+    def test_index_host_that_is_also_a_name_guess_keeps_the_name_guess_rule(self):
+        profile = {"organisation_number": "924585463", "name": "RB PROFF PARTNER AS", "evidence": {}}
+        with mock.patch.object(footprint_plus.discovery_index, "candidates", return_value=[("rbproffpartner.no", "https://rbproffpartner.no/kontakt")]):
+            hosts = footprint_plus.candidate_hosts(profile)
+        self.assertEqual(hosts[0], ("rbproffpartner.no", "name_slug_guess"))

@@ -139,6 +139,24 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertEqual(unproven["official_website"]["availability"], "ambiguous")
         self.assertIsNone(unproven["official_website"]["value"])
 
+    def test_declared_site_that_does_not_exist_or_belongs_to_a_manager_never_stands_in(self):
+        env = self._declared_env("blocked")
+        env_claims = {c["field"]: c for c in env["claims"]}
+        self.assertEqual(env_claims["official_website"]["availability"], "available")  # robots/403: site exists, unchecked
+        rec = self._declared_env("source_error")
+        self.assertEqual({c["field"]: c for c in rec["claims"]}["official_website"]["method"], "registry_declared")
+        profile = {"organisation_number": "991972889", "name": "HVITTINGFOSS SENTRUM BORETTSLAG", "legal_form": "BRL", "bankrupt": False, "liquidating": False,
+                   "evidence": {"registry_live": evidence("registry_live", "available", "official_registry_live", "https://data.brreg.no/x", value={"website": "www.tnbbl.no"}),
+                                "website": evidence("website", "blocked", "registry_linked_company_website", "https://www.tnbbl.no/", note="Hostname did not resolve")},
+                   "run_metrics": {"requests": 1}}
+        for form, note in (("BRL", "Hostname did not resolve"), ("AS", "Hostname did not resolve"), ("BRL", "URLError: timed out")):
+            profile["legal_form"] = form
+            profile["evidence"]["website"]["note"] = note
+            env = to_contract(terminal_envelope(profile, run_id="t", modules=["registry_live", "website"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z"))
+            claims = {c["field"]: c for c in env["claims"]}
+            self.assertNotEqual(claims["official_website"]["availability"], "available", (form, note))
+            self.assertEqual(claims["registry_website"]["value"], "www.tnbbl.no")
+
     def _care_of_env(self, reasons):
         profile = {
             "organisation_number": "816559472", "name": "TEAMTEC WASTE TO ENERGY AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
