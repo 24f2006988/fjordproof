@@ -1,7 +1,7 @@
 {
-  "run_id": "r8-smoke2",
-  "started_at": "2026-10-21T12:29:30.541590Z",
-  "completed_at": "2026-10-21T12:50:16.001537Z",
+  "run_id": "rel-smoke",
+  "started_at": "2026-10-22T08:55:00.156537Z",
+  "completed_at": "2026-10-22T09:13:03.601477Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -29,10 +29,10 @@
     "bulk_note": "bulk snapshot not supplied"
   },
   "operations": {
-    "requests": 1628,
-    "bytes": 2455212,
-    "p50_ms": 1203,
-    "p95_ms": 1516,
+    "requests": 1624,
+    "bytes": 2456184,
+    "p50_ms": 2297,
+    "p95_ms": 7766,
     "third_party_cost_usd": 0.0,
     "budget_exhausted": false
   },
@@ -48,11 +48,11 @@
     "invalid_states": []
   },
   "job_feed": {
-    "active_ads": 9352,
-    "requests": 152,
+    "active_ads": 9422,
+    "requests": 154,
     "error": null,
     "days": 60
   },
-  "discovery_retries": 27,
+  "discovery_retries": 31,
   "footprint_retries": 0
 }
