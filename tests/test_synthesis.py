@@ -46,8 +46,18 @@ class Synthesis(unittest.TestCase):
         self.assertEqual(by["official_website"]["availability"], "ambiguous")
         self.assertIn("could not be proven", by["official_website"]["reason"])
         self.assertIn("opted out of audit", by["auditor"]["reason"])
+
+    def test_one_person_as_general_manager_and_chair_is_named_once(self):
+        env = envelope()
+        env["claims"] = [c for c in env["claims"] if c["field"] != "ceo"] + [
+            claim("ceo", "Kari Nordmann", "ev-roles"), claim("board_chair", "Kari Nordmann", "ev-roles")]
+        s = build_synthesis(env)
+        lead = next(x["text"] for x in s["statements"] if x["text"].startswith("Registered roles"))
+        self.assertIn("general manager and board chair Kari Nordmann", lead)
+        self.assertEqual(lead.count("Kari Nordmann"), 1)
+        self.assertIn("in Oslo", s["headline"])
         self.assertNotIn("online", {x["topic"] for x in s["statements"]})
-        self.assertTrue(s["headline"].startswith("EKSEMPEL AS (985589003): private limited company (AS) in OSLO"), s["headline"])
+        self.assertTrue(s["headline"].startswith("EKSEMPEL AS (985589003): private limited company (AS) in Oslo"), s["headline"])
         self.assertIn("annual loss NOK 20 thousand in 2025", s["headline"])
         self.assertIn("revenue +50% year on year", s["headline"])
         self.assertIn("negative equity at the end of 2025", s["headline"])
@@ -126,7 +136,7 @@ class ConclusionAndUnknownSources(unittest.TestCase):
 
     def test_conclusion_restates_exact_figures_and_cites_evidence(self):
         s = build_synthesis(self.with_evidence(envelope()))
-        self.assertTrue(s["conclusion"].startswith("EKSEMPEL AS (985589003) is a private limited company (AS) in OSLO"))
+        self.assertTrue(s["conclusion"].startswith("EKSEMPEL AS (985589003) is a private limited company (AS) in Oslo"))
         self.assertIn("an annual loss of NOK 20 thousand", s["conclusion"])
         self.assertIn("revenue +50% from 2024", s["conclusion"])
         first = s["statements"][0]

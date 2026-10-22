@@ -85,6 +85,14 @@ def _name(value: Any) -> str:
     return " ".join(value) if isinstance(value, list) else str(value)
 
 
+def _place(value: Any) -> str:
+    """Registry place names are upper case (NORD-AURDAL, BØ I TELEMARK); write them as names in running text."""
+    text = str(value or "")
+    if not text.isupper():
+        return text
+    return " ".join(w.lower() if w in {"I", "Og", "På"} else w for w in text.title().split(" "))
+
+
 def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     claims = {c["field"]: c for c in envelope.get("claims", [])}
 
@@ -110,7 +118,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         signals.append({"signal": code, "text": text, "evidence_ids": ev(*fields)})
 
     # Identity and status
-    name, form, mun = val("name"), val("legal_form"), val("municipality")
+    name, form, mun = val("name"), val("legal_form"), _place(val("municipality"))
     org = envelope.get("organisation_number")
     if name:
         status = val("insolvency_status") or {}
@@ -235,10 +243,14 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
 
     # People and control
     people = []
-    if val("ceo"):
-        people.append(f"general manager {_name(val('ceo'))}")
-    if val("board_chair"):
-        people.append(f"board chair {_name(val('board_chair'))}")
+    ceo, chair = val("ceo"), val("board_chair")
+    if ceo and chair and _name(ceo) == _name(chair):
+        people.append(f"general manager and board chair {_name(ceo)}")  # one person in both roles: name them once
+    else:
+        if ceo:
+            people.append(f"general manager {_name(ceo)}")
+        if chair:
+            people.append(f"board chair {_name(chair)}")
     if val("auditor"):
         people.append(f"auditor {_name(val('auditor'))}")
     elif val("audit_exemption"):
