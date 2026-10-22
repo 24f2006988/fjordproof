@@ -56,6 +56,7 @@ class Synthesis(unittest.TestCase):
         self.assertIn("general manager and board chair Kari Nordmann", lead)
         self.assertEqual(lead.count("Kari Nordmann"), 1)
         self.assertIn("in Oslo", s["headline"])
+        self.assertNotIn("current roles in total", s["conclusion"])  # the two roles of one person are all the roles
         self.assertNotIn("online", {x["topic"] for x in s["statements"]})
         self.assertTrue(s["headline"].startswith("EKSEMPEL AS (985589003): private limited company (AS) in Oslo"), s["headline"])
         self.assertIn("annual loss NOK 20 thousand in 2025", s["headline"])

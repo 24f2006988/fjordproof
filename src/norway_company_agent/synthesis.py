@@ -386,7 +386,8 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         active = [r for r in ((val("roles") or {}).get("roles") or []) if not r.get("inactive")]
         runners = [p for p in people if p.startswith(("general manager", "board chair"))]
         if runners:
-            parts.append("It is run by " + " and ".join(runners) + (f" ({len(active)} current roles in total)" if len(active) > len(runners) else "")
+            n_runner_roles = bool(ceo) + bool(chair)  # one name can hold both roles
+            parts.append("It is run by " + " and ".join(runners) + (f" ({len(active)} current roles in total)" if len(active) > n_runner_roles else "")
                          + (f"; roles last changed on {recent[0].get('last_changed')}" if recent else "") + ".")
         elif active:
             parts.append(f"The role register lists {len(active)} current role{'s' if len(active) != 1 else ''}"
