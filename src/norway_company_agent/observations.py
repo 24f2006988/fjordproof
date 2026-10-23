@@ -89,6 +89,19 @@ def build_observations(org: str, records: dict[str, dict[str, Any]], *, web_ok: 
                                         {"type": "brreg_" + ("same_entity" if j["employer_link"] == "own" else "subunit_of_company"), "value": org}],
                         acquisition_mode="official_api", source_class="official_job_feed", evidence_span=j["span"],
                         strategy="jobs_feed_discovery"))
+    act = records.get("public_activity") or {}
+    for i in ((act.get("value") or {}).get("items") or []) if act.get("status") == "available" else []:
+        if not (i.get("content_sha256") and i.get("date") and i.get("title")):
+            continue
+        ted = i.get("kind") == "public_contract_award"
+        out.append(_obs(org, "activity", i["url"], i.get("row") or i.get("notice"), platform="ted" if ted else "skattefunn",
+                        signal_type="public_post", source_url=i["url"],
+                        **({"source_record": f"{i['url']}#row={i['row']}"} if i.get("row") else {}),
+                        retrieved_at=i.get("retrieved_at"), content_sha256=i["content_sha256"], published_at=i["date"],
+                        identity_proof=[{"type": "winner_organisation_number_in_ted_notice" if ted else "organisation_number_in_skattefunn_list",
+                                         "value": org}],
+                        acquisition_mode="official_api" if ted else "official_bulk_file", source_class="official_public_activity",
+                        evidence_span=i["span"][:240], strategy="official_public_activity"))
     wf = records.get("workforce") or {}
     if wf_present:
         v = wf.get("value") or {}

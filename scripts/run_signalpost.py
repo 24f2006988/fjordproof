@@ -29,11 +29,13 @@ from norway_company_agent.google_search import cost_per_call  # noqa: E402
 from norway_company_agent.gemini_discovery import model as gemini_model  # noqa: E402
 from collections import Counter  # noqa: E402
 from norway_company_agent.nav_jobs import JobFeed, fetch_jobs  # noqa: E402
+from norway_company_agent.public_activity import PublicActivity, fetch_activity  # noqa: E402
 from norway_company_agent import site_description  # noqa: E402
 from norway_company_agent.workforce import fetch_workforce  # noqa: E402
 
-MODULES = "registry,accounting_obligation,registry_live,financials,financial_history,roles,group,locations,website,external_footprint,workforce,nav_jobs"
-PLUS_MODULES = {"external_footprint", "workforce", "nav_jobs"}  # run in this script, after the base pipeline
+MODULES = ("registry,accounting_obligation,registry_live,financials,financial_history,roles,group,locations,website,external_footprint,"
+           "workforce,nav_jobs,public_activity")
+PLUS_MODULES = {"external_footprint", "workforce", "nav_jobs", "public_activity"}  # run in this script, after the base pipeline
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -87,6 +89,19 @@ def main() -> None:
     feed = JobFeed(days=a.job_feed_days)
     feed_deadline = time.monotonic() + max(60.0, budget.remaining_seconds - 600.0)
     threading.Thread(target=feed.load, kwargs={"deadline": feed_deadline}, daemon=True).start()
+    # TED awards + SkatteFUNN projects for the whole batch (a few requests per run), loaded while the registry pipeline runs.
+    activity = PublicActivity()
+    if os.environ.get("SIGNALPOST_PUBLIC_ACTIVITY", "").casefold() != "off":
+        batch_orgs = []
+        for line in Path(a.organisations).read_text(encoding="utf-8").splitlines():
+            try:
+                batch_orgs.append(str((json.loads(line) or {}).get("organisation_number") or ""))
+            except (ValueError, AttributeError):
+                batch_orgs.append(line.strip())
+        threading.Thread(target=activity.load, args=(batch_orgs,), daemon=True).start()
+    else:
+        activity.errors = {"ted": "switched off", "skattefunn": "switched off"}
+        activity.ready.set()
     rc = subprocess.run(cmd, stdout=subprocess.DEVNULL).returncode
     if rc != 0:
         raise SystemExit(f"base pipeline failed ({rc})")
@@ -224,6 +239,14 @@ def main() -> None:
         list(pool.map(jobs, profiles))
     budget.record_requests(feed.requests)
     report["job_feed"] = {"active_ads": len(feed.ads), "requests": feed.requests, "error": feed.error, "days": a.job_feed_days}
+    activity.ready.wait(timeout=max(0.0, min(120.0, budget.remaining_seconds - 600.0)))
+    for pr in profiles:
+        pr["evidence"]["public_activity"] = fetch_activity(pr, activity) if activity.ready.is_set() else evidence(
+            "public_activity", "source_error", "official_public_activity", "https://api.ted.europa.eu/v3/notices/search",
+            note="TED / SkatteFUNN not loaded within the time budget")
+    budget.record_requests(activity.requests)
+    report["public_activity"] = {"requests": activity.requests, "errors": activity.errors,
+                                 "companies": sum(pr["evidence"]["public_activity"]["status"] == "available" for pr in profiles)}
     retry: set[str] = set()
     with ThreadPoolExecutor(a.plus_workers) as pool:
         profiles = list(pool.map(plus, profiles))

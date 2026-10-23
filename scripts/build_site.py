@@ -207,7 +207,8 @@ const money = n => (n == null ? "–" : nok.format(n));
 function accounts(d){ const v = val(d, "annual_accounts"); if (!v || !v.records) return []; const scope = v.records.some(r => r.account_type === "SELSKAP") ? "SELSKAP" : (v.records.some(r => r.account_type === "KONSERN") ? "KONSERN" : null); return v.records.filter(r => !scope || r.account_type === scope).sort((a,b) => (a.period?.tilDato||"").localeCompare(b.period?.tilDato||"")); }
 function latestAcc(d){ const a = accounts(d); return a.length ? a[a.length-1] : null; }
 function activeRoles(d){ const v = val(d, "roles"); return v && v.roles ? v.roles.filter(r => !r.inactive) : []; }
-function activity(d){ const v = val(d, "external_footprint"); return v && v.dated_activity ? v.dated_activity : []; }
+function activity(d){ const v = val(d, "external_footprint"); const site = v && v.dated_activity ? v.dated_activity : [];
+  return site.concat((val(d, "public_activity") || []).map(x => ({date:x.date, url:x.url, title:x.source + ": " + x.title + (x.buyer ? " (" + x.buyer + ")" : "")}))); }
 function status(d){ const i = val(d, "insolvency_status"); if (!i) return ["unknown","none"]; if (i.bankrupt) return ["Bankrupt","bad"]; if (i.liquidating) return ["Under liquidation","warn"]; return ["Active in registry","ok"]; }
 function found(d){ return FIELDS.filter(f => claim(d, f)?.s === "available").length; }
 function evNo(d, id){ return d.evidence.findIndex(e => e.id === id) + 1; }
@@ -385,9 +386,10 @@ function activityPanel(d){
   const site = val(d,"official_website");
   const wcl = claim(d,"official_website"); const weak = site && wcl.c != null && wcl.c < 0.9;
   box.append(el("p", {}, site ? [weak ? "Website listed in the registry (identity not confirmed by the page): " : "Verified website: ", link(site), refs(d, wcl?.e)] : "No website could be verified for this company."), d.website_note && site ? el("p", {class:"meta", text:"How it was matched: " + d.website_note}) : null);
-  if (!v){ box.append(el("p", {class:"empty", text:NOT_FOUND_WHY.external_footprint})); return box; }
   const act = [...activity(d)].sort((a,b) => (b.date||"").localeCompare(a.date||""));
-  if (act.length) box.append(el("h3", {text:"Dated items"}), el("ul", {class:"plain"}, act.slice(0,30).map(x => el("li", {}, (x.date || "undated") + " – ", link(x.url, x.title || x.url)))));
+  if (act.length) box.append(el("h3", {text:"Dated items"}), el("ul", {class:"plain"}, act.slice(0,30).map(x => el("li", {}, (x.date || "undated") + " – ", link(x.url, x.title || x.url)))),
+                             claim(d,"public_activity")?.s === "available" ? el("p", {class:"meta"}, "TED contract awards and SkatteFUNN projects name this organisation number ", refs(d, claim(d,"public_activity").e)) : null);
+  if (!v){ box.append(el("p", {class:"empty", text:NOT_FOUND_WHY.external_footprint})); return box; }
   if (v.contact && Object.keys(v.contact).length) box.append(el("p", {text:"Contact on the site: " + Object.entries(v.contact).map(([k,x]) => k + " " + x).join(", ")}));
   if (v.social_links && v.social_links.length) box.append(el("p", {}, "Social links listed on the company site: ", v.social_links.map((u,i) => [i ? " · " : "", link(typeof u === "string" ? u : u.url)])));
   if ((v.careers_urls||[]).length) box.append(el("p", {}, "Careers pages: ", v.careers_urls.map((u,i) => [i ? " · " : "", link(u)])));

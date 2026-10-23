@@ -461,6 +461,11 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         when = str(j.get("published") or j.get("published_date") or "")[:10]
         if when:
             dated.append((when, f"job ad \"{j['title']}\" published {when}"))
+    for kind, label in (("public_contract_award", "public contract awarded (TED)"), ("rd_tax_credit_project", "SkatteFUNN R&D project approved")):
+        item = next((i for i in val("public_activity") or [] if i.get("kind") == kind), None)  # newest of each kind
+        if item:
+            buyer = f" by {item['buyer']}" if item.get("buyer") else ""
+            dated.append((str(item["date"]), f"{label} {item['date']}{buyer}: \"{item['title']}\""))
     for r in recent[:2]:
         dated.append((str(r.get("last_changed")), f"role registration changed: {r.get('role')} {_name(r.get('name') or r.get('organisation_number'))} ({r.get('last_changed')})"))
     filings = val("annual_account_filings") or []
@@ -478,7 +483,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         # "No open job ad" is a statement about the NAV feed, so it cites the feed record that was searched.
         section("Working here", work, work_fields, "Neither a headcount, man-years nor an open job ad could be established.",
                 extra=["ev-nav_jobs"] if not jobs else None),
-        section("Recent activity", [activity_line], ("news_items", "job_postings", "roles", "annual_account_filings"),
+        section("Recent activity", [activity_line], ("news_items", "job_postings", "public_activity", "roles", "annual_account_filings"),
                 "No dated public activity was found."),
         # The brief asks what changed and what remains unknown; both get their own cited section.
         section("What changed", [change_text], ("annual_accounts", "roles", "annual_account_filings"), change_text),

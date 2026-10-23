@@ -599,6 +599,27 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         "confidence": 0.80 if jobs_present else 0.0,
         "evidence_ids": ((fp_evidence("job_postings") if site_jobs else []) + [e for _, ids in nav_items for e in ids]) if jobs_present else [],
     })
+    # Dated public activity (TED contract awards, SkatteFUNN R&D projects): each item cites the official row naming this org number.
+    act_rec = records.get("public_activity") or {}
+    act_raw = ((act_rec.get("value") or {}).get("items") or []) if act_rec.get("status") == "available" else []
+
+    def activity_evidence(item: dict[str, Any]) -> list[str]:
+        eid = f"ev-public_activity-{len(evidence)}"
+        record = f"{item['url']}#row={item['row']}" if item.get("row") else item["url"]
+        evidence.append({"id": eid, "source_url": item["url"], "source_record": record, "source_class": "official_public_activity",
+                         "retrieved_at": item.get("retrieved_at") or act_rec.get("retrieved_at"), "content_sha256": item.get("content_sha256"),
+                         "claim_span": item["span"]})
+        return [eid]
+
+    act_items = [({k: v for k, v in i.items() if k not in {"span", "content_sha256", "retrieved_at", "row"}}, activity_evidence(i))
+                 for i in act_raw if i.get("content_sha256") and i.get("date") and i.get("title")]
+    claims.append({
+        "field": "public_activity",
+        "value": [item for item, _ in act_items] or None,
+        "availability": "available" if act_items else ("not_available" if act_rec.get("status") == "not_found" else "failed"),
+        "confidence": 0.95 if act_items else 0.0,
+        "evidence_ids": [e for _, ids in act_items for e in ids],
+    })
 
     # Baseline module claims (preserving existing contract compatibility)
     for module, (field, confidence) in MODULE_CLAIMS.items():
@@ -692,6 +713,8 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
                 atomic("job_posting", j, fp_item_evidence("job_postings", j["title"]), 0.80)
     for item, ids in nav_items:
         atomic("job_posting", item, ids, 0.95, period={"published": item.get("published"), "expires": item.get("expires")})
+    for item, ids in act_items:
+        atomic("public_activity_item", item, ids, 0.95, period={"date": item["date"], **({"project_years": item["period"]} if item.get("period") else {})})
 
     known = {e["id"]: e for e in evidence}
     for claim in claims:

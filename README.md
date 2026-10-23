@@ -133,7 +133,8 @@ Adds to the starter (every external fact needs exact-entity proof; anything unpr
    declared Common Crawl candidate index (below). A site is published only with proof of the exact entity: the organisation number printed on
    its own pages, the registered street address and postcode, or the unique-name rule (the domain is the whole distinctive legal name, the page
    names the company as a company, no other organisation number is printed, the page has real content, and a Brreg name search finds no other
-   entity carrying that name).
+   entity carrying that name). Proof pages are read terms/legal first (Shopify shops: their policy pages). Name guesses with other endings
+   (.io .se .dk .net .as .eu .co) and crawl-index candidates are published only on the organisation number printed live.
 2. The homepage the company declares in the register is always published as `registry_website` (a registry fact). It stands in as
    `official_website` (method `registry_declared`, confidence 0.6) only when our check could not reach an existing site (timeout, 403, robots),
    never for a domain that does not resolve and never for housing co-operatives or condominiums (they list their manager's site).
@@ -144,6 +145,10 @@ Adds to the starter (every external fact needs exact-entity proof; anything unpr
    NOTEOPPLYSNINGER page, only when its header shows the organisation number, and only a confidently read two-decimal value.
 6. Every fetched financial year and every registry field we fetch (activity text, statutory purpose, register dates, former names, secondary
    industries, ...) as separate claims, plus `external_observations` in the starter kit's observation schema.
+7. Dated public activity (`public_activity`, one `public_activity_item` claim per item) from official sources keyed by the organisation number,
+   never by name: EU TED contract award notices that list the company as a winner registered in Norway (TED API v3, one search per 50
+   companies), and the Research Council of Norway's list of approved SkatteFUNN R&D projects (one file per run). Each item has its own date
+   (TED publication date / SkatteFUNN decision date), title, direct URL and the literal row. Off: `SIGNALPOST_PUBLIC_ACTIVITY=off`.
 
 ### Output format
 Each envelope keeps the starter's native fields (`state`, `modules`, `profile`) and also carries the `OUTPUT_CONTRACT.md` fields
@@ -156,13 +161,18 @@ e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresult
   (Company brief, Latest financials, Who runs it?, Working here, Recent activity, What changed, What is unknown), `statements`, `signals` and
   `unknowns` (each with its reason and the source that was checked). "What changed" reports changes since the previous run (or that this is the
   first observation) and the changes visible inside the sources (year on year, role changes); every sentence cites the evidence it rests on.
-- `news_items`: article-level news from the verified site only (`title`, `url`, `published_date`, `date_kind`); a sitemap `<lastmod>` is never
-  used as a publication date.
+- `news_items`: article-level news from the verified site only (`title`, `url`, `published_date`, `date_kind`). Feed, WordPress and sitemap
+  entries are only candidates: an item is published when its own page is an article (NewsArticle/BlogPosting/PressRelease or
+  `og:type=article`) with an explicit publication date (`datePublished` / `article:published_time`), at least 100 words of article text,
+  no product/event/offer/listing markup, and text that names the company or speaks for it. A feed's `updated`, a sitemap `<lastmod>` or a
+  bare `<time>` element is never used as a publication date.
 
 ### Submission facts
 - Run command: `uv sync && uv run python scripts/run_signalpost.py --organisations <batch.jsonl> --run-id <id> --expected-count <n> --outdir out`
 - Without keys (the default): no model, no paid API, USD 0. Sources: Brønnøysundregistrene open data (NLOD 2.0: Enhetsregisteret, roles,
-  Regnskapsregisteret, annual-account copies), NAV's public job feed, and company-owned websites (robots.txt respected, public-URL guard).
+  Regnskapsregisteret, annual-account copies), NAV's public job feed, company-owned websites (robots.txt respected, public-URL guard),
+  EU TED notices (api.ted.europa.eu, free public API; EU open-data reuse, Commission Decision 2011/833/EU) and the Research Council of Norway's
+  published SkatteFUNN project list (forskningsradet.no; public-sector information, reuse assumed under NLOD 2.0).
 - Declared cache: `data/discovery_index.json.gz` (224 KB, built by `scripts/build_discovery_index.py` from Common Crawl CC-MAIN-2026-39 home,
   contact, about and legal pages of .no domains). It holds candidate (domain, organisation number) pairs only, no facts; a site from it is
   verified live like any other candidate. Off: `SIGNALPOST_DISCOVERY_CACHE=off`.
