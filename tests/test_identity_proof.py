@@ -25,6 +25,28 @@ class HardProofTests(unittest.TestCase):
         pages = {"https://example.no/": '<a href="/handel-og-personvern">Personvern</a>', "https://example.no/handel-og-personvern": "Org.nr 985 589 003 MVA"}
         self.assertIn("exact organisation number", _proof(pages) or "")
 
+    def test_proof_links_rank_terms_first_and_shopify_policies(self):
+        html = ('<a href="/cookies">Cookies</a><a href="/personvern">Personvern</a><a href="/om-oss">Om oss</a>'
+                '<a href="/side/12">Kontakt</a><a href="/kjopsvilkar">Kjøpsvilkår</a><a href="/blogg">Blogg</a>')
+        self.assertEqual(footprint_plus._proof_links("https://example.no", html),
+                         ["https://example.no/kjopsvilkar", "https://example.no/side/12", "https://example.no/om-oss",
+                          "https://example.no/personvern", "https://example.no/cookies"])
+        shop = '<script src="//cdn.shopify.com/s/x.js"></script><a href="/pages/kontakt">Kontakt</a>'
+        self.assertEqual(footprint_plus._proof_links("https://shop.no", shop)[:2],
+                         ["https://shop.no/policies/terms-of-service", "https://shop.no/policies/contact-information"])
+
+    def test_shopify_terms_page_beyond_four_links_gives_org_proof(self):
+        links = "".join(f'<a href="/personvern-{i}">Personvern {i}</a>' for i in range(6))
+        pages = {"https://shop.no/": '<script src="https://cdn.shopify.com/a.js"></script>' + links,
+                 "https://shop.no/policies/terms-of-service": "Supermercado AS, org.nr. 985 589 003"}
+
+        def fake_get(url, *a, **k):
+            body = pages.get(url)
+            return (body.encode() if body else None), url
+        with mock.patch.object(footprint_plus, "_get", fake_get):
+            proof = footprint_plus.hard_identity_proof(_profile(), {"source_url": "https://shop.no/"})[0]
+        self.assertIn("exact organisation number printed on https://shop.no/policies/terms-of-service", proof or "")
+
     def test_org_number_inside_longer_digit_string_is_not_proof(self):
         self.assertIsNone(_proof({"https://example.no/": "Ring 47985589003 eller 9855890031"}))
 

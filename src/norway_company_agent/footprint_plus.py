@@ -620,6 +620,14 @@ PROOF_PATHS = ("/kontakt", "/kontakt-oss", "/om-oss", "/om", "/contact", "/about
                "/privacy", "/privacy-policy", "/vilkar", "/vilkaar", "/handlebetingelser", "/salgsbetingelser", "/impressum", "/cookies")
 PROOF_LINK_TERMS = ("kontakt", "contact", "om-oss", "omoss", "om oss", "about", "personvern", "privacy", "vilk", "terms", "betingelser",
                     "impressum", "cookie", "fakturering", "selskap", "company")
+# Proof link order: shop terms and legal pages print the org number most often, cookie pages least.
+PROOF_LINK_RANK = (
+    ("vilk", "terms", "betingelser", "kjop", "kjøp", "handel", "impressum", "policies", "fakturering", "selskap", "company"),
+    ("kontakt", "contact"),
+    ("om-oss", "omoss", "om oss", "about"),
+    ("personvern", "privacy"),
+)
+SHOPIFY_PROOF_PATHS = ("/policies/terms-of-service", "/policies/contact-information")  # every Shopify shop has these
 MAX_PROOF_PAGES = 4
 MAX_FEED_ITEMS = 20  # candidate items read per site feed (no extra requests)
 MAX_ARTICLE_PAGES = 6  # candidate article pages fetched per site; only pages that prove themselves an article are published
@@ -628,21 +636,30 @@ WEAK_CANDIDATE_PROOF_PAGES = 2  # name score < 0.5: most such pages are look-ali
 
 
 def _proof_links(root: str, html: str) -> list[str]:
-    """Same-host links on the homepage whose address or text suggests a contact / legal / about page."""
+    """Same-host links on the homepage whose address or text suggests a contact / legal / about page.
+
+    Ranked by PROOF_LINK_RANK (terms/legal first, then contact, about, privacy, the rest), page order within a rank;
+    Shopify shops get their standard policy pages first.
+    """
     host = urllib.parse.urlparse(root).netloc.lower().removeprefix("www.")
-    found: list[str] = []
+    found: list[tuple[str, str]] = []
     seen_norm: set[str] = set()
     for a in BeautifulSoup(html, "lxml").find_all("a", href=True):
         href = urllib.parse.urljoin(root + "/", a["href"].strip()).split("#")[0]
         parsed = urllib.parse.urlparse(href)
         if parsed.scheme not in {"http", "https"} or parsed.netloc.lower().removeprefix("www.") != host:
             continue
-        label = (parsed.path + " " + a.get_text(" ", strip=True)).casefold()
+        label = (urllib.parse.unquote(parsed.path) + " " + a.get_text(" ", strip=True)).casefold()
         norm_href = (href.rstrip("/") or href).casefold()
         if any(term in label for term in PROOF_LINK_TERMS) and norm_href not in seen_norm:
             seen_norm.add(norm_href)
-            found.append(href)
-    return found
+            found.append((href, label))
+    if "cdn.shopify.com" in html:
+        found = [(root + p, p) for p in SHOPIFY_PROOF_PATHS if (root + p).casefold() not in seen_norm] + found
+
+    def rank(item: tuple[str, str]) -> int:
+        return next((i for i, terms in enumerate(PROOF_LINK_RANK) if any(t in item[1] for t in terms)), len(PROOF_LINK_RANK))
+    return [href for href, _ in sorted(found, key=rank)]  # sorted() is stable: page order within each rank
 
 
 def _extract_company_proof_targets(profile: dict[str, Any]) -> dict[str, Any]:
