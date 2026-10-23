@@ -621,7 +621,9 @@ PROOF_PATHS = ("/kontakt", "/kontakt-oss", "/om-oss", "/om", "/contact", "/about
 PROOF_LINK_TERMS = ("kontakt", "contact", "om-oss", "omoss", "om oss", "about", "personvern", "privacy", "vilk", "terms", "betingelser",
                     "impressum", "cookie", "fakturering", "selskap", "company")
 MAX_PROOF_PAGES = 4
-MAX_FEED_ITEMS = 20  # dated items kept per site feed; the feed is already downloaded, so more items cost no requests
+MAX_FEED_ITEMS = 20  # candidate items read per site feed (no extra requests)
+MAX_ARTICLE_PAGES = 6  # candidate article pages fetched per site; only pages that prove themselves an article are published
+MIN_ARTICLE_WORDS = 100  # words of article text; shorter pages are product, listing, portfolio or event stubs
 WEAK_CANDIDATE_PROOF_PAGES = 2  # name score < 0.5: most such pages are look-alikes, keep the proof cheap
 
 
@@ -830,8 +832,8 @@ import urllib.request  # noqa: E402  (kept after helpers to keep imports grouped
 
 NEWS_SEGMENTS = {
     "nyheter", "nyhet", "nytt", "siste-nytt", "news", "aktuelt", "blogg", "blog",
-    "presse", "press", "pressemeldinger", "pressemelding", "artikler", "artikkel", "innlegg", "post", "posts",
-}
+    "presse", "press", "pressemeldinger", "pressemelding", "artikler", "artikkel",
+}  # 'post', 'posts', 'innlegg' are not news words: they name product, listing and event pages too (Builderr audit 2026-10-23)
 NOT_NEWS_SEGMENTS = {
     "produkt", "produkter", "product", "products", "shop", "butikk",
     "kategori", "kategorier", "category", "categories", "collections", "brands", "merker",
@@ -1134,7 +1136,8 @@ def _parse_feed(raw: bytes, base: str) -> list[dict[str, str]]:
         if tag not in {"item", "entry"}:
             continue
         get = lambda *names: next((c for c in node if c.tag.rsplit("}", 1)[-1] in names), None)  # noqa: E731
-        title, link, date = get("title"), get("link"), get("pubDate", "published", "updated", "date")
+        # Publication date only: an Atom 'updated' or dc:date is not when the item was published, so such items are skipped.
+        title, link, date = get("title"), get("link"), get("pubDate", "published")
         href = (link.get("href") if link is not None and link.get("href") else (link.text if link is not None else "")) or ""
         when = ""
         if date is not None and date.text:
@@ -1150,9 +1153,45 @@ def _parse_feed(raw: bytes, base: str) -> list[dict[str, str]]:
 
 
 ARTICLE_TYPES = {"newsarticle", "article", "blogposting", "reportagenewsarticle", "pressrelease"}
+SPECIFIC_ARTICLE_TYPES = ARTICLE_TYPES - {"article"}  # generic 'Article' is put on ordinary pages by some themes
+NOT_ARTICLE_TYPES = {
+    "product", "productgroup", "offer", "aggregateoffer", "event", "itemlist", "collectionpage", "searchresultspage",
+    "jobposting", "realestatelisting", "service", "course", "menu", "profilepage",
+}
+ARTICLE_BODY_SELECTORS = ('[itemprop="articleBody"]', ".entry-content", ".post-content", "article", "main")
+LEGAL_FORM_TOKENS = {"as", "asa", "sa", "ans", "da", "ba", "nuf", "enk", "se", "ks", "iks", "kf", "bbl", "brl", "esek", "sam", "stiftelse"}
+FIRST_PERSON_RE = re.compile(r"\b(vi|oss|vår|vårt|våre|we|our|ours)\b", re.I)
+
+
+def _plain_tokens(value: Any) -> list[str]:
+    text = str(value or "").translate(str.maketrans({"ø": "o", "Ø": "O", "å": "a", "Å": "A", "æ": "ae", "Æ": "AE"}))
+    return re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().casefold())
+
+
+def _about_names(profile: dict[str, Any], site_url: str) -> list[list[str]]:
+    """Ways an article can name the company: registry name without legal form, and the site's domain brand."""
+    names = []
+    core = [t for t in _plain_tokens(profile.get("name")) if t not in LEGAL_FORM_TOKENS]
+    if core:
+        names.append(core)
+    label = (_registered_domain(site_url) or "").split(".", 1)[0] if site_url else ""
+    brand = _plain_tokens(label.replace("-", " "))
+    if brand and len("".join(brand)) >= 3 and brand not in names:
+        names.append(brand)
+    return names
+
+
+def _about_company(text: str, names: list[list[str]]) -> bool:
+    """The article names the company (whole-word sequence) or speaks for it in first person (vi/oss/vår, we/our)."""
+    if FIRST_PERSON_RE.search(text):
+        return True
+    tokens = _plain_tokens(text)
+    return any(tokens[i:i + len(n)] == n for n in names for i in range(len(tokens) - len(n) + 1))
 NOT_ARTICLE_SEGMENTS = {
     "page", "side", "tag", "tags", "post-tag", "post-tags",
     "kategori", "kategorier", "category", "categories", "author", "forfatter", "feed", "arkiv", "archive",
+    "produkt", "produkter", "product", "products", "shop", "butikk", "nettbutikk", "event", "events",
+    "arrangement", "arrangementer", "kalender", "calendar",
 }
 
 
@@ -1172,14 +1211,22 @@ def _iso_date(text: str) -> str:
     return when
 
 
-def _article_meta(raw: bytes) -> tuple[str, str, str, str] | None:
+def _article_meta(raw: bytes, about: list[list[str]] | None = None) -> tuple[str, str, str, str] | None:
     """(title, publication date, date source, literal span) declared by the article page itself, else None.
 
-    Only explicit publication markup counts (JSON-LD datePublished, article:published_time, <time datetime>
-    inside the article); modification dates and sitemap lastmod are never used as a publication date.
+    The page must prove it is an article: a specific article type (NewsArticle, BlogPosting, PressRelease, ...) or
+    og:type=article, an explicit publication date (JSON-LD datePublished or article:published_time; modification
+    dates, feed 'updated', sitemap lastmod and bare <time> elements never count), at least MIN_ARTICLE_WORDS words
+    of article text, and no product, event, offer or listing markup. With ``about`` (company names), the article
+    text must also be about the company (_about_company).
     """
     soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "lxml")
+    og_type = soup.select_one('meta[property="og:type"]')
+    og_type = str(og_type.get("content") or "").strip().casefold() if og_type else ""
+    if og_type.startswith(("product", "event", "profile")):
+        return None
     title, date, kind, span = "", "", "", ""
+    page_types: set[str] = set()
     for s in soup.select('script[type="application/ld+json"]'):
         try:
             data = json.loads(s.string or s.get_text() or "{}")
@@ -1191,28 +1238,30 @@ def _article_meta(raw: bytes) -> tuple[str, str, str, str] | None:
                 continue
             types = node.get("@type")
             types = {str(t).casefold() for t in (types if isinstance(types, list) else [types])}
-            if types & ARTICLE_TYPES and node.get("datePublished"):
+            page_types |= types
+            if not date and types & ARTICLE_TYPES and node.get("datePublished") and (types & SPECIFIC_ARTICLE_TYPES or og_type == "article"):
                 date = _iso_date(str(node["datePublished"]))
                 if date:
                     title = str(node.get("headline") or node.get("name") or "")
                     kind, span = "jsonld_datePublished", f'"datePublished": "{node["datePublished"]}"'
-                    break
-        if date:
-            break
-    if not date:
-        meta = soup.select_one('meta[property="article:published_time"], meta[itemprop="datePublished"]')
+    if page_types & NOT_ARTICLE_TYPES:
+        return None
+    if not date and og_type == "article":
+        meta = soup.select_one('meta[property="article:published_time"]')
         if meta and _iso_date(str(meta.get("content") or "")):
             date, kind, span = _iso_date(str(meta.get("content"))), "meta_published_time", str(meta)
-    if not date:
-        t = soup.select_one('article time[datetime], time[itemprop="datePublished"][datetime], time.published[datetime], time.entry-date[datetime], main time[datetime]')
-        if t and _iso_date(str(t.get("datetime") or "")):
-            date, kind, span = _iso_date(str(t.get("datetime"))), "article_time_element", str(t)
     if not date:
         return None
     if not title:
         og = soup.select_one('meta[property="og:title"]')
         h1 = soup.find("h1")
         title = (str(og.get("content") or "") if og else "") or (h1.get_text(" ", strip=True) if h1 else "")
+    for junk in soup(["script", "style", "noscript", "nav", "header", "footer", "aside", "form"]):
+        junk.decompose()
+    body = next((b for b in (soup.select_one(sel) for sel in ARTICLE_BODY_SELECTORS) if b is not None), soup.body)
+    body_text = body.get_text(" ", strip=True) if body is not None else ""
+    if len(body_text.split()) < MIN_ARTICLE_WORDS or (about is not None and not _about_company(f"{title} {body_text}", about)):
+        return None
     title = " ".join(BeautifulSoup(title, "lxml").get_text().split())[:200] if title else ""
     return (title, date, kind, span) if title else None
 
@@ -1231,7 +1280,8 @@ def _article_links(raw: bytes, base: str, host: str, section: str) -> list[str]:
     return out
 
 
-def _news_articles(sections: list[str], candidates: list[str], host: str, max_articles: int = 4) -> tuple[list[dict[str, str]], list[dict[str, str]], int]:
+def _news_articles(sections: list[str], candidates: list[str], host: str, max_articles: int = MAX_ARTICLE_PAGES,
+                   about: list[list[str]] | None = None) -> tuple[list[dict[str, str]], list[dict[str, str]], int]:
     """Article-level news items (title, direct URL, publication date) read from each article page itself.
 
     Returns (items, provenance per item, requests used). At most one section page and ``max_articles`` article pages.
@@ -1253,7 +1303,7 @@ def _news_articles(sections: list[str], candidates: list[str], host: str, max_ar
         _NET.last_requests = 1
         araw, afinal = _get(url, timeout=5.0)
         requests += getattr(_NET, "last_requests", 1)
-        meta = _article_meta(araw) if araw else None
+        meta = _article_meta(araw, about) if araw else None
         if not meta:
             continue
         title, date, kind, span = meta
@@ -1495,15 +1545,14 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
                     note("contact_email", found_email[0], csrc, csha, found_email[1])
 
     activity = []
+    feed_items: list[dict[str, str]] = []
     for feed in feeds[:2]:
         _NET.last_requests = 1
         fraw, ffinal = _get(feed)
         metrics["requests"] += getattr(_NET, "last_requests", 1)
         if fraw:
             metrics["bytes"] += len(fraw)
-            for item in _parse_feed(fraw, ffinal or feed):
-                activity.append({**item, "date_kind": "feed_item_date", "source_feed": ffinal})
-                note("dated_activity", item["url"], ffinal or feed, _sha(fraw), f"{item['title']} {item['date']}")
+            feed_items += _parse_feed(fraw, ffinal or feed)
     if final:
         host = urllib.parse.urlparse(final).netloc.lower()
         sm_careers, sm_news, sm_dated, sm_requests, sm_prov = _sitemap_signals(final, host)
@@ -1516,20 +1565,20 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             if u not in news_pages:
                 news_pages.append(u)
                 note("news_pages", u, sm_prov[u]["source_url"], sm_prov[u]["sha256"], sm_prov[u]["span"])
-        if not activity and raw and b"/wp-json/" in raw:
-            activity, wp_src = _wp_posts(final)
+        if not feed_items and raw and b"/wp-json/" in raw:
+            feed_items, _ = _wp_posts(final)
             metrics["requests"] += 1
-            for item in activity:
-                note("dated_activity", item["url"], wp_src["source_url"], wp_src["sha256"], f"{item['title']} {item['date']}")
-        # A sitemap <lastmod> is not a publication date: sitemap posts are only candidates for the article step.
-        if not activity:
-            sections = [u for u in news_pages if (_segments(urllib.parse.urlparse(u).path) or [""])[-1] in NEWS_SEGMENTS]
-            candidates = [d["url"] for d in sm_dated] + [u for u in sm_news if u not in sections]
-            arts, art_prov, art_requests = _news_articles(sections, list(dict.fromkeys(candidates)), host)
-            metrics["requests"] += art_requests
-            activity = arts
-            for p in art_prov:
-                note("dated_activity", p["item"], p["source_url"], p["sha256"], p["span"])
+        # Feed items, WordPress posts and sitemap posts are only candidates: an item is published only when its own
+        # page proves it is a dated article (_article_meta), and the date published is the page's publication date.
+        feed_items.sort(key=lambda i: i["date"], reverse=True)
+        sections = [u for u in news_pages if (_segments(urllib.parse.urlparse(u).path) or [""])[-1] in NEWS_SEGMENTS]
+        candidates = [i["url"] for i in feed_items] + [d["url"] for d in sm_dated] + [u for u in sm_news if u not in sections]
+        arts, art_prov, art_requests = _news_articles(sections, list(dict.fromkeys(candidates)), host,
+                                                      about=_about_names(profile, final))
+        metrics["requests"] += art_requests
+        activity = arts
+        for p in art_prov:
+            note("dated_activity", p["item"], p["source_url"], p["sha256"], p["span"])
         # Backfill news_pages (up to 3) from verified same-site dated_activity article URLs (zero extra HTTP requests)
         if len(news_pages) < 3 and activity:
             for act_item in activity:

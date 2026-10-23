@@ -19,7 +19,8 @@ class FootprintHeuristics(unittest.TestCase):
     def test_news_excludes_product_categories(self):
         self.assertTrue(_is_news("/nyheter/ny-butikk"))
         self.assertTrue(_is_news("/", "Blogg"))
-        self.assertTrue(_is_news("/post/skatt-pa-krypto"))
+        self.assertFalse(_is_news("/post/skatt-pa-krypto"))  # URL word alone is not news (Builderr audit)
+        self.assertFalse(_is_news("/innlegg/sofa-tilbud"))
         self.assertFalse(_is_news("/produkter/nyheter"))
         self.assertFalse(_is_news("/tapet/fibertapet/nyheter"))
         self.assertTrue(_is_news("/no/nyheter/ny-butikk"))

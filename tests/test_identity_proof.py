@@ -5,6 +5,9 @@ from norway_company_agent import footprint_plus
 from norway_company_agent.contract import to_contract
 
 
+BODY = "<article><p>" + " ".join(["Vi har gode nyheter om selskapet og kundene våre i regionen."] * 12) + "</p></article>"
+
+
 def _profile():
     return {"organisation_number": "985589003", "name": "TEST AS", "evidence": {"registry": {"value": {}}}}
 
@@ -99,8 +102,8 @@ class HardProofTests(unittest.TestCase):
         self.assertEqual(v["careers_urls"], ["https://example.no/karriere/"])
         self.assertEqual(v["dated_activity"], [])
         # The article page's own publication markup is used instead (title, direct URL, published date).
-        article = ('<html><head><meta property="og:title" content="Ny kunde i Oslo">'
-                   '<meta property="article:published_time" content="2026-08-20T08:00:00+02:00"></head><body></body></html>')
+        article = ('<html><head><meta property="og:type" content="article"><meta property="og:title" content="Ny kunde i Oslo">'
+                   '<meta property="article:published_time" content="2026-08-20T08:00:00+02:00"></head><body>' + BODY + '</body></html>')
         v = self._footprint({"https://example.no/": "<p>Hei</p>", "https://example.no/sitemap.xml": sitemap,
                              "https://example.no/nyheter/ny-kunde-i-oslo": article})
         self.assertEqual(v["dated_activity"], [{"title": "Ny kunde i Oslo", "url": "https://example.no/nyheter/ny-kunde-i-oslo",
@@ -111,7 +114,7 @@ class HardProofTests(unittest.TestCase):
         section = ('<a href="/nyheter/apning-pa-hamar">Åpning</a><a href="/nyheter/page/2">Neste</a>'
                    '<a href="/nyheter/kategori/drift">Drift</a><a href="https://other.no/nyheter/x">Ekstern</a>')
         art = ('<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"NewsArticle",'
-               '"headline":"Vi åpner på Hamar","datePublished":"2026-05-02T09:00:00Z","dateModified":"2026-09-01"}]}</script>')
+               '"headline":"Vi åpner på Hamar","datePublished":"2026-05-02T09:00:00Z","dateModified":"2026-09-01"}]}</script>' + BODY)
         v = self._footprint({"https://example.no/": home, "https://example.no/nyheter": section,
                              "https://example.no/nyheter/apning-pa-hamar": art})
         self.assertEqual(v["dated_activity"], [{"title": "Vi åpner på Hamar", "url": "https://example.no/nyheter/apning-pa-hamar",
@@ -125,14 +128,61 @@ class HardProofTests(unittest.TestCase):
         self.assertIsNone(footprint_plus._article_meta(b'<h1>X</h1><meta property="article:published_time" content="2999-01-01">'))
         self.assertIsNone(footprint_plus._article_meta(b'<meta property="article:modified_time" content="2026-01-01"><h1>X</h1>'))
 
-    def test_wordpress_rest_posts_used_when_no_feed(self):
+    def test_wordpress_rest_posts_are_candidates_published_only_from_their_own_article_page(self):
         posts = '[{"date": "2026-08-15T09:00:00", "link": "https://example.no/hei/", "title": {"rendered": "Hei &amp; velkommen"}}]'
-        v = self._footprint({
+        pages = {
             "https://example.no/": '<link rel="https://api.w.org/" href="https://example.no/wp-json/">',
             "https://example.no/wp-json/wp/v2/posts?per_page=5&_fields=date,link,title": posts,
-        })
+        }
+        self.assertEqual(self._footprint(pages)["dated_activity"], [])
+        pages["https://example.no/hei/"] = ('<meta property="og:type" content="article"><meta property="og:title" content="Hei &amp; velkommen">'
+                                            '<meta property="article:published_time" content="2026-08-15T09:00:00+02:00">' + BODY)
+        v = self._footprint(pages)
         self.assertEqual(v["dated_activity"][0]["title"], "Hei & velkommen")
         self.assertEqual(v["dated_activity"][0]["date"], "2026-08-15")
+        self.assertEqual(v["item_sources"]["dated_activity"][0]["source_url"], "https://example.no/hei/")
+
+    def test_feed_item_needs_published_date_and_an_article_page(self):
+        feed = ('<rss><channel>'
+                '<item><title>Portefølje: Firma AS</title><link>https://example.no/firma-as/</link><pubDate>Mon, 02 Jun 2025 10:00:00 +0000</pubDate></item>'
+                '<item><title>Ny avtale</title><link>https://example.no/ny-avtale/</link><pubDate>Tue, 03 Jun 2025 10:00:00 +0000</pubDate></item>'
+                '</channel></rss>')
+        atom = '<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Bare oppdatert</title><link href="https://example.no/x/"/><updated>2026-01-01T00:00:00Z</updated></entry></feed>'
+        self.assertEqual(footprint_plus._parse_feed(atom.encode(), "https://example.no/"), [])
+        article = ('<meta property="og:type" content="article">'
+                   '<meta property="article:published_time" content="2025-06-03T12:00:00+02:00"><h1>Ny avtale</h1>' + BODY)
+        v = self._footprint({
+            "https://example.no/": '<link rel="alternate" type="application/rss+xml" href="/feed/">',
+            "https://example.no/feed/": feed,
+            "https://example.no/firma-as/": "<h1>Firma AS</h1><p>Investert 2025.</p>",  # portfolio page: no article markup
+            "https://example.no/ny-avtale/": article,
+        })
+        self.assertEqual([(i["url"], i["date"]) for i in v["dated_activity"]], [("https://example.no/ny-avtale/", "2025-06-03")])
+
+    def test_article_meta_rejects_ordinary_product_event_and_short_pages(self):
+        dated = '<meta property="article:published_time" content="2026-03-01">'
+        ok = '<meta property="og:type" content="article">' + dated + "<h1>Nyhet</h1>" + BODY
+        self.assertIsNotNone(footprint_plus._article_meta(ok.encode()))
+        # article:published_time without og:type=article, or generic Article markup alone, is an ordinary page
+        self.assertIsNone(footprint_plus._article_meta((dated + "<h1>Side</h1>" + BODY).encode()))
+        generic = '<script type="application/ld+json">{"@type":"Article","headline":"Side","datePublished":"2026-03-01"}</script>'
+        self.assertIsNone(footprint_plus._article_meta((generic + BODY).encode()))
+        self.assertIsNotNone(footprint_plus._article_meta((generic.replace('"Article"', '"BlogPosting"') + BODY).encode()))
+        # product / event markup, product og:type, or too little article text
+        product = '<script type="application/ld+json">{"@type":"Product","name":"Stol"}</script>'
+        self.assertIsNone(footprint_plus._article_meta((product + ok).encode()))
+        self.assertIsNone(footprint_plus._article_meta(ok.replace('content="article"', 'content="product"').encode()))
+        self.assertIsNone(footprint_plus._article_meta(('<meta property="og:type" content="article">' + dated + "<h1>Kurs</h1><p>Påmelding her.</p>").encode()))
+        # with company names: the article must name the company or speak for it (vi/oss/vår, we/our)
+        about = footprint_plus._about_names({"name": "A-SEAFOOD AS"}, "https://a-seafood.com/")
+        self.assertEqual(about, [["a", "seafood"]])
+        demo = ('<meta property="og:type" content="article">' + dated + "<h1>Salmon</h1><article>"
+                + "Salmon and trout are no longer a luxury in many markets. " * 12 + "</article>")
+        self.assertIsNone(footprint_plus._article_meta(demo.encode(), about))
+        self.assertIsNotNone(footprint_plus._article_meta(demo.replace("in many markets", "for A-Seafood").encode(), about))
+        self.assertIsNotNone(footprint_plus._article_meta(ok.encode(), about))  # BODY says 'Vi har ...'
+        # a bare <time> element is not a publication date
+        self.assertIsNone(footprint_plus._article_meta(("<main><time datetime='2026-03-01'>1. mars</time><h1>Kurs</h1></main>" + BODY).encode()))
 
     def test_accept_proof_rules(self):
         org = "exact organisation number printed on https://x.no/"

@@ -594,8 +594,8 @@ class ExtrasExtractionTests(unittest.TestCase):
         self.assertTrue(footprint_plus._is_news("/nyheter/aarsrapport-2025"))
 
         article_html = (
-            b'<html><head><meta property="article:published_time" content="2025-05-10"/></head>'
-            b'<body><h1>Real Article</h1></body></html>'
+            b'<html><head><meta property="og:type" content="article"/><meta property="article:published_time" content="2025-05-10"/></head>'
+            b'<body><h1>Real Article</h1><article>' + b"Company news text. " * 40 + b'</article></body></html>'
         )
         section_html = (
             b'<html><body>'
