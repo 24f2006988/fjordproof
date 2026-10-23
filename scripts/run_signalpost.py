@@ -79,7 +79,8 @@ def main() -> None:
     out = Path(a.outdir)
     profiles_path, env_path, report_path = out / "profiles.jsonl", out / "envelopes.jsonl", out / "run-report.json"
     base_modules = ",".join(m for m in MODULES.split(",") if m not in PLUS_MODULES)  # website discovery also runs in this script
-    max_reqs = a.max_requests if a.max_requests is not None else max(1800, int(a.expected_count * 15))
+    # Official limit: 2,000 requests per 100 companies. Keep 100 in reserve; the man-year step stops a further 100 earlier.
+    max_reqs = a.max_requests if a.max_requests is not None else max(1900, int(a.expected_count * 19))
     budget = BudgetGuard(max_runtime_seconds=a.max_runtime_seconds, max_requests=max_reqs)
     cmd = [sys.executable, str(ROOT / "scripts" / "run_competition_batch.py"), "--organisations", a.organisations,
            "--profiles-output", str(profiles_path), "--output", str(env_path), "--report", str(report_path),
