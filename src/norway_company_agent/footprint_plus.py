@@ -1201,6 +1201,9 @@ NOT_ARTICLE_TYPES = {
 ARTICLE_BODY_SELECTORS = ('[itemprop="articleBody"]', ".entry-content", ".post-content", "article", "main")
 LEGAL_FORM_TOKENS = {"as", "asa", "sa", "ans", "da", "ba", "nuf", "enk", "se", "ks", "iks", "kf", "bbl", "brl", "esek", "sam", "stiftelse"}
 FIRST_PERSON_RE = re.compile(r"\b(vi|oss|vår|vårt|våre|we|our|ours)\b", re.I)
+# Posts titled as a model list, rental, offer, campaign or price page are product/listing pages, not news.
+COMMERCE_TITLE_RE = re.compile(r"\b(modell(?:er|ene)?|leie|priser?|prisliste|nettbutikk|kj[øo]p|bestill|sale|offer|rental|prices?|shop)\b"
+                               r"|(utleie|tilbud|kampanje|salg|rabatt)\b", re.I)  # also as the end of a compound: høstkampanje, vårtilbud
 
 
 def _plain_tokens(value: Any) -> list[str]:
@@ -1303,7 +1306,7 @@ def _article_meta(raw: bytes, about: list[list[str]] | None = None) -> tuple[str
     if len(body_text.split()) < MIN_ARTICLE_WORDS or (about is not None and not _about_company(f"{title} {body_text}", about)):
         return None
     title = " ".join(BeautifulSoup(title, "lxml").get_text().split())[:200] if title else ""
-    return (title, date, kind, span) if title else None
+    return (title, date, kind, span) if title and not COMMERCE_TITLE_RE.search(title) else None
 
 
 def _article_links(raw: bytes, base: str, host: str, section: str) -> list[str]:

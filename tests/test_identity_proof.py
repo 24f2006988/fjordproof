@@ -358,3 +358,12 @@ class BusinessSportsClubTests(unittest.TestCase):
                          self._score("THANSTRØM BIL AS", "AS"))
         self.assertIn("business sports-club entity points to the operating company's site without club evidence",
                       self._score("EQUINOR BIL", "FLI"))
+
+
+class CommerceTitleTests(unittest.TestCase):
+    def test_model_list_rental_and_offer_posts_are_not_news(self):
+        page = ('<meta property="og:type" content="article"><meta property="article:published_time" content="2026-03-01">'
+                '<meta property="og:title" content="{}">' + BODY)
+        for title in ("Våre varebil modeller", "Bobil utleie 2025", "Showroom Salg", "Høstkampanje"):
+            self.assertIsNone(footprint_plus._article_meta(page.format(title).encode()), title)
+        self.assertIsNotNone(footprint_plus._article_meta(page.format("Thanstrøm Bil AS blir forhandler av Paxster").encode()))
