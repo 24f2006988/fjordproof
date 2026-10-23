@@ -94,7 +94,7 @@ def build_observations(org: str, records: dict[str, dict[str, Any]], *, web_ok: 
         if not (i.get("content_sha256") and i.get("date") and i.get("title")):
             continue
         ted = i.get("kind") == "public_contract_award"
-        out.append(_obs(org, "activity", i["url"], i.get("row") or i.get("notice"), platform="ted" if ted else "skattefunn",
+        out.append(_obs(org, "activity", f"{i['url']}|{i.get('row') or i.get('notice')}", platform="ted" if ted else "skattefunn",
                         signal_type="public_post", source_url=i["url"],
                         **({"source_record": f"{i['url']}#row={i['row']}"} if i.get("row") else {}),
                         retrieved_at=i.get("retrieved_at"), content_sha256=i["content_sha256"], published_at=i["date"],

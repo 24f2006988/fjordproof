@@ -72,3 +72,27 @@ def test_fetch_activity_states():
 def test_skattefunn_column_change_is_an_error_not_a_guess():
     p = _loaded(skf=_xlsx([["Navn", "Tittel"], ["X AS", "Y"]]))
     assert "skattefunn" in p.errors and ORG not in p.skattefunn
+
+
+def test_contract_claims_observations_and_recent_activity():
+    from norway_company_agent.batch import terminal_envelope
+    from norway_company_agent.contract import to_contract
+    from norway_company_agent.evidence import evidence
+    from norway_company_agent.official import normalize_entity
+
+    live = normalize_entity({"organisasjonsnummer": ORG, "navn": "WYSSEN NORGE AS"})
+    profile = {"organisation_number": ORG, "name": "WYSSEN NORGE AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
+               "evidence": {"registry_live": evidence("registry_live", "available", "official_registry_live",
+                                                      f"https://data.brreg.no/enhetsregisteret/api/enheter/{ORG}", value=live),
+                            "public_activity": pa.fetch_activity({"organisation_number": ORG}, _loaded())},
+               "run_metrics": {"requests": 1, "latencies_ms": [1]}}
+    env = to_contract(terminal_envelope(profile, run_id="t", modules=["registry_live", "public_activity"],
+                                        started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z"))
+    items = [c for c in env["claims"] if c["field"] == "public_activity_item"]
+    assert len(items) == 2 and all(c["evidence_ids"] and c["source_path"] for c in items)
+    ev = {e["id"]: e for e in env["evidence"]}
+    assert any("#row=" in ev[c["evidence_ids"][0]]["source_record"] for c in items)
+    assert sum(o["source_class"] == "official_public_activity" for o in env["external_observations"]) == 2
+    recent = next(s for s in env["synthesis"]["sections"] if s["label"] == "Recent activity")
+    assert "public contract awarded (TED) 2024-07-19 by Statens vegvesen" in recent["text"]
+    assert "SkatteFUNN R&D project approved 2024-08-30" in recent["text"]
