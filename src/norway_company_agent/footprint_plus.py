@@ -375,6 +375,17 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
                         out.append((f"{slug}.no", "subunit_name_guess"))
                         out.append((f"{slug}.com", "subunit_name_guess"))
 
+    # Native spelling (thanstrømbil.no) as its IDN/punycode host, right after the first romanised name guess; same proof rules.
+    if raw_toks and any(ch in "æøå" for tok in raw_toks for ch in tok):
+        idn_hosts = []
+        for form in dict.fromkeys(["".join(raw_toks)] + (["-".join(raw_toks)] if len(raw_toks) > 1 else [])):
+            try:
+                idn_hosts.append((form.encode("idna").decode("ascii") + ".no", "name_slug_guess"))
+            except UnicodeError:
+                continue
+        first = next((i for i, (_, m) in enumerate(out) if m == "name_slug_guess"), len(out) - 1)
+        out[first + 1:first + 1] = idn_hosts
+
     # Prioritize .no hosts first (since >95% of Norwegian business sites use .no)
     no_hosts: list[tuple[str, str]] = []
     other_hosts: list[tuple[str, str]] = []
@@ -406,19 +417,19 @@ def _is_care_of(profile: dict[str, Any] | None) -> bool:
     ev = profile.get("evidence") or {}
     live_val = (ev.get("registry_live") or {}).get("value") or {}
     raw_val = (ev.get("registry") or {}).get("value") or {}
-    reg_addr = (
-        " ".join(
-            str(x)
-            for a in (live_val.get("business_address"), live_val.get("postal_address"))
-            if isinstance(a, dict)
-            for x in (a.get("adresse") or [])
-        )
-        + " "
-        + str(raw_val.get("forretningsadresse.adresse") or "")
-        + " "
-        + str(raw_val.get("postadresse.adresse") or "")
-    )
-    return bool(re.search(r"\b(c/o|v/)", reg_addr, re.IGNORECASE))
+    lines = [
+        str(x)
+        for a in (live_val.get("business_address"), live_val.get("postal_address"))
+        if isinstance(a, dict)
+        for x in (a.get("adresse") or [])
+    ] + [str(raw_val.get("forretningsadresse.adresse") or ""), str(raw_val.get("postadresse.adresse") or "")]
+    hits = [line for line in lines if re.search(r"\b(c/o|v/)", line, re.IGNORECASE)]
+    if not hits:
+        return False
+    # "c/o KFRegnskap AS" on KFREGNSKAP AS names the company itself, not another party: not care-of.
+    core = _tokens(profile.get("name"))
+    named = [_tokens(re.split(r"\b(?:c/o|v/)", line, maxsplit=1, flags=re.IGNORECASE)[1].split(",")[0]) for line in hits]
+    return not (core and all(n == core or "".join(n) == "".join(core) for n in named))
 
 
 STRUCTURAL_QUALIFIERS = {"holding", "eiendom", "eiendommer", "invest", "finans", "kapital"}
@@ -508,7 +519,13 @@ def name_domain_proof(profile: dict[str, Any], record: dict[str, Any], method: s
         return None, 0
     value = record.get("value") or {}
     host = (urllib.parse.urlparse(value.get("final_url") or record.get("source_url") or "").hostname or "").casefold().removeprefix("www.")
-    label = "".join(_tokens(host.split(".")[0])) if host else ""
+    first_label = host.split(".")[0] if host else ""
+    if first_label.startswith("xn--"):
+        try:
+            first_label = first_label.encode("ascii").decode("idna")  # thanstrømbil -> compared like the romanised name
+        except UnicodeError:
+            pass
+    label = "".join(_tokens(first_label))
     variants = {compact} | {"".join(_tokens(v)) for v in _slug_variants("".join(_raw_tokens(profile.get("name"))))}
     if label not in variants:
         return None, 0

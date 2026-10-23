@@ -59,6 +59,21 @@ class HardProofTests(unittest.TestCase):
         self.assertFalse(footprint_plus._accept_proof("registered street address and postcode printed on https://x.io/",
                                                       {"score": 0.95}, "other_tld_guess", profile))
 
+    def test_native_spelling_idn_host_is_a_name_guess(self):
+        profile = {"organisation_number": "964348030", "name": "THANSTRØM BIL AS", "evidence": {"registry": {"value": {}}}}
+        with mock.patch.object(footprint_plus.discovery_index, "candidates", lambda p: []):
+            hosts = footprint_plus.candidate_hosts(profile)
+        self.assertIn(("xn--thanstrmbil-mgb.no", "name_slug_guess"), hosts)
+        self.assertLess(hosts.index(("xn--thanstrmbil-mgb.no", "name_slug_guess")), 4)
+
+    def test_care_of_the_company_itself_is_not_care_of(self):
+        def prof(name, addr):
+            return {"name": name, "evidence": {"registry_live": {"value": {"business_address": {"adresse": [addr, "Rådhusgata 3"]}}}}}
+        self.assertFalse(footprint_plus._is_care_of(prof("KFREGNSKAP AS", "c/o KFRegnskap AS")))
+        self.assertTrue(footprint_plus._is_care_of(prof("CREATEEEVITY AS", "c/o Hauge Business Network")))
+        self.assertTrue(footprint_plus._is_care_of(prof("KFREGNSKAP AS", "c/o")))
+        self.assertFalse(footprint_plus._is_care_of(prof("KFREGNSKAP AS", "Storgata 1")))
+
     def test_org_number_inside_longer_digit_string_is_not_proof(self):
         self.assertIsNone(_proof({"https://example.no/": "Ring 47985589003 eller 9855890031"}))
 
