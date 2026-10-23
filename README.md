@@ -183,11 +183,11 @@ e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresult
 - OCR uses half the CPU cores as workers (`--ocr-workers`), each with its own 2-thread engine; annual-account copies download during the
   website stage. A built-in budget guard stops new work before 40 minutes and 1,900 requests per 100 companies (official limit 2,000)
   and still emits every envelope.
-- Measured (smoke-100 `r9-smoke`, no keys, 12-core laptop): 100/100 envelopes, validation passed, 1,706 requests, 15 minutes, 0 uncited
-  claims, 12 verified websites, man-years for 72 companies, TED/SkatteFUNN activity for 2 companies. A second set of 100 other companies
-  (no keys): 1,688 requests, 15 minutes, valid, TED/SkatteFUNN activity for 3 companies. Limit per 100-company shard: 2,000 requests /
+- Measured (smoke-100 `r9f-smoke`, no keys, 12-core laptop): 100/100 envelopes, validation passed, 1,681 requests, 17 minutes, 0 uncited
+  claims, 13 verified websites, man-years for 72 companies, TED/SkatteFUNN activity for 2 companies. A second set of 100 other companies
+  (no keys): 1,696 requests, 33 minutes on a shared network, valid, TED/SkatteFUNN activity for 3 companies. Limit per 100-company shard: 2,000 requests /
   45 minutes / USD 10.
-- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r9-smoke`, no keys).
+- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r9f-smoke`, no keys).
 
 ### Optional keys (all off by default; with no key: no request, no cost, identical output)
 If Builderr supplies a key for scoring, these steps switch on with no code change; each declares its cost per company in
