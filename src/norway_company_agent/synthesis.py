@@ -461,7 +461,8 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
         when = str(j.get("published") or j.get("published_date") or "")[:10]
         if when:
             dated.append((when, f"job ad \"{j['title']}\" published {when}"))
-    for kind, label in (("public_contract_award", "public contract awarded (TED)"), ("rd_tax_credit_project", "SkatteFUNN R&D project approved")):
+    for kind, label in (("public_contract_award", "public contract awarded (TED)"), ("rd_tax_credit_project", "SkatteFUNN R&D project approved"),
+                        ("central_approval", "DiBK central approval for building work from"), ("lei_registration", "LEI first registered (GLEIF)")):
         item = next((i for i in val("public_activity") or [] if i.get("kind") == kind), None)  # newest of each kind
         if item:
             buyer = f" by {item['buyer']}" if item.get("buyer") else ""

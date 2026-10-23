@@ -4,6 +4,10 @@
   registered in Norway (winner-country NOR at the same position). One search per 50 companies per run.
 - SkatteFUNN (Research Council of Norway): the published list of approved R&D tax-credit projects, one file per run,
   rows whose 'Organisasjonsnr' is this company.
+- GLEIF (Global LEI Foundation API): LEI records registered at the Brønnøysund register (RA000472, jurisdiction NO) under this
+  organisation number. One search per 100 companies per run.
+- DiBK sentral godkjenning: the public enterprise page of the building-approval register (/enterprises/<org>, open to crawlers;
+  the /api/ path is not). Only for construction and architecture/engineering companies (NACE 41-43, 71), one page each.
 
 Every item carries its own date (TED publication date / SkatteFUNN decision date), a title, a direct URL and the
 literal source span, so it is a dated fact about this company only. Nothing is published from a name match.
@@ -11,13 +15,17 @@ literal source span, so it is a dated fact about this company only. Nothing is p
 from __future__ import annotations
 
 import hashlib
+import html
 import io
 import json
 import re
 import threading
+import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from typing import Any
 
@@ -30,7 +38,15 @@ TED_FIELDS = ["publication-number", "publication-date", "notice-type", "winner-i
 TED_BATCH = 50
 SKATTEFUNN_LIST = "https://www.forskningsradet.no/siteassets/skattefunn/tall/260902-webliste-skattefunn.xlsx"
 SKATTEFUNN_PAGE = "https://www.forskningsradet.no/skattefunn/"
+GLEIF_SEARCH = "https://api.gleif.org/api/v1/lei-records"
+GLEIF_RECORD = "https://api.gleif.org/api/v1/lei-records/{lei}"
+GLEIF_BATCH = 100
+BRREG_RA = "RA000472"  # GLEIF's code for the Brønnøysund register of legal entities
+DIBK_PAGE = "https://sgregister.dibk.no/enterprises/{org}"
+DIBK_NACE = ("41", "42", "43", "71")  # building, civil engineering, specialised construction, architecture/engineering
+DIBK_WORKERS = 4
 MAX_ITEMS_PER_SOURCE = 10
+SOURCES = ("ted", "skattefunn", "gleif", "dibk")
 _NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 
@@ -97,6 +113,10 @@ class PublicActivity:
         self.sha256: dict[str, str] = {}
         self.ted: dict[str, list[dict[str, Any]]] = {}
         self.skattefunn: dict[str, list[dict[str, Any]]] = {}
+        self.gleif: dict[str, list[dict[str, Any]]] = {}
+        self.dibk: dict[str, list[dict[str, Any]]] = {}
+        self.dibk_checked: set[str] = set()
+        self._lock = threading.Lock()
         self.ready = threading.Event()
 
     def _post(self, url: str, body: dict[str, Any]) -> bytes:
@@ -107,7 +127,8 @@ class PublicActivity:
             return resp.read()
 
     def _get(self, url: str) -> bytes:
-        self.requests += 1
+        with self._lock:
+            self.requests += 1
         with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=self.timeout) as resp:
             return resp.read()
 
@@ -120,6 +141,10 @@ class PublicActivity:
             self._load_skattefunn()
         except Exception as exc:  # noqa: BLE001
             self.errors["skattefunn"] = type(exc).__name__
+        try:
+            self._load_gleif([o for o in dict.fromkeys(_digits(o) for o in orgs) if len(o) == 9])
+        except Exception as exc:  # noqa: BLE001
+            self.errors["gleif"] = type(exc).__name__
         self.ready.set()
 
     def _load_ted(self, orgs: list[str]) -> None:
@@ -175,22 +200,118 @@ class PublicActivity:
             })
 
 
+    def _load_gleif(self, orgs: list[str]) -> None:
+        self.retrieved_at["gleif"] = utc_now()
+        hashes = []
+        for i in range(0, len(orgs), GLEIF_BATCH):
+            chunk = orgs[i:i + GLEIF_BATCH]
+            query = urllib.parse.urlencode({"filter[entity.registeredAs]": ",".join(chunk), "page[size]": 200})
+            raw = self._get(f"{GLEIF_SEARCH}?{query}")
+            hashes.append(hashlib.sha256(raw).hexdigest())
+            wanted = set(chunk)
+            for rec in json.loads(raw).get("data") or []:
+                a = rec.get("attributes") or {}
+                ent, reg, lei = a.get("entity") or {}, a.get("registration") or {}, str(a.get("lei") or "")
+                org = _digits(ent.get("registeredAs"))
+                # The same 9 digits can be another country's company number: the record must point at the Norwegian register.
+                if org not in wanted or ent.get("jurisdiction") != "NO" or (ent.get("registeredAt") or {}).get("id") != BRREG_RA:
+                    continue
+                first = str(reg.get("initialRegistrationDate") or "")[:10]
+                status = str(reg.get("status") or "")
+                if not (re.fullmatch(r"[A-Z0-9]{20}", lei) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", first) and status):
+                    continue
+                renewal = str(reg.get("nextRenewalDate") or "")[:10]
+                name = " ".join(str((ent.get("legalName") or {}).get("name") or "").split())
+                self.gleif.setdefault(org, []).append({
+                    "source": "GLEIF LEI record", "kind": "lei_registration", "lei": lei, "status": status, "next_renewal": renewal,
+                    "title": f"Legal Entity Identifier {lei} (registration {status.lower()})", "date": first,
+                    "url": GLEIF_RECORD.format(lei=lei),
+                    "span": (f"GLEIF {lei}: registeredAs {org}, registeredAt {BRREG_RA}, jurisdiction NO, legalName {name}; "
+                             f"registration {status}, initial {first}, next renewal {renewal}")[:240],
+                })
+        self.sha256["gleif"] = hashlib.sha256("".join(hashes).encode()).hexdigest()
+
+    def load_dibk(self, profiles: list[dict[str, Any]], may_continue: Any = lambda: True) -> None:
+        """One enterprise page per construction/architecture company; a 404 means no approval is registered."""
+        wanted = [o for o in dict.fromkeys(_digits(p.get("organisation_number")) for p in profiles
+                                           if str(p.get("industry_code") or "")[:2] in DIBK_NACE) if len(o) == 9]
+        self.retrieved_at["dibk"] = utc_now()
+
+        def one(org: str) -> None:
+            if not may_continue():
+                return
+            url = DIBK_PAGE.format(org=org)
+            try:
+                raw = self._get(url)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    with self._lock:
+                        self.dibk_checked.add(org)
+                return
+            except Exception:  # noqa: BLE001  this company stays unchecked
+                return
+            items = parse_dibk(raw.decode("utf-8", "replace"), org, url)
+            with self._lock:
+                self.dibk_checked.add(org)
+                for item in items:
+                    self.dibk.setdefault(org, []).append({**item, "content_sha256": hashlib.sha256(raw).hexdigest()})
+
+        with ThreadPoolExecutor(DIBK_WORKERS) as pool:
+            list(pool.map(one, wanted))
+
+
+def _dmy(value: str) -> str:
+    m = re.fullmatch(r"(\d{2})\.(\d{2})\.(\d{4})", value.strip())
+    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else ""
+
+
+def _text(fragment: str) -> str:
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())
+
+
+def parse_dibk(page: str, org: str, url: str) -> list[dict[str, Any]]:
+    """The approval as the page states it: same organisation number, 'has central approval', a dated period, its areas."""
+    shown = re.search(r"Organisasjonsnummer</b>\s*<p[^>]*>\s*(\d{9})\s*<", page)
+    status = re.search(r"<h3[^>]*>(.*?)</h3>", page, re.S)
+    period = re.search(r"Godkjenningsperiode:\s*</b>\s*<span[^>]*>(.*?)</span>", page, re.S)
+    if not (shown and shown.group(1) == org and status and _text(status.group(1)) == "Foretaket har sentral godkjenning" and period):
+        return []
+    parts = re.split(r"\s*[\u2013\u2014-]\s*", _text(period.group(1)))
+    start, end = (_dmy(parts[0]), _dmy(parts[1])) if len(parts) == 2 else ("", "")
+    if not (start and end):
+        return []
+    areas: list[str] = []
+    for function, field, cls in re.findall(r"<tr>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>(.*?)</td>\s*<td[^>]*>\s*(\d)\s*</td>", page, re.S):
+        area = f"{_text(function)} - {_text(field).strip('()')}, tiltaksklasse {cls}"
+        if _text(function) and area not in areas:
+            areas.append(area)
+    if not areas:
+        return []
+    name = re.search(r"<h2[^>]*>(.*?)</h2>", page, re.S)
+    title = f"Central approval for building work, valid {start} to {end}: " + "; ".join(areas)
+    return [{"source": "DiBK sentral godkjenning", "kind": "central_approval", "title": title[:200], "date": start,
+             "period": f"{start}/{end}", "areas": areas, "url": url,
+             "span": (f"{_text(name.group(1)) if name else ''} Organisasjonsnummer {org}; Foretaket har sentral godkjenning; "
+                      f"Godkjenningsperiode {start} - {end}; {areas[0]}")[:240]}]
+
+
 def fetch_activity(profile: dict[str, Any], pa: PublicActivity) -> dict[str, Any]:
     """Evidence record 'public_activity' for one company: dated items whose source row names this organisation number."""
     org = _digits(profile.get("organisation_number"))
     items: list[dict[str, Any]] = []
-    for source, table in (("ted", pa.ted), ("skattefunn", pa.skattefunn)):
+    for source, table in (("ted", pa.ted), ("skattefunn", pa.skattefunn), ("gleif", pa.gleif), ("dibk", pa.dibk)):
         if source in pa.errors:
             continue
         for item in sorted(table.get(org, []), key=lambda i: i["date"], reverse=True)[:MAX_ITEMS_PER_SOURCE]:
-            items.append({**item, "retrieved_at": pa.retrieved_at.get(source), "content_sha256": pa.sha256.get(source)})
+            # DiBK items carry their own page hash; run-level sources share one hash per source.
+            items.append({"retrieved_at": pa.retrieved_at.get(source), "content_sha256": pa.sha256.get(source), **item})
     items.sort(key=lambda i: (i["date"], i["url"]), reverse=True)
-    checked = [s for s in ("ted", "skattefunn") if s not in pa.errors]
+    checked = [s for s in SOURCES if s not in pa.errors and (s != "dibk" or org in pa.dibk_checked)]
     if items:
         return evidence("public_activity", "available", "official_public_activity", items[0]["url"], value={"items": items, "sources": checked},
-                        retrieved_at=utc_now(), note="Dated items from TED / SkatteFUNN whose own row names this organisation number")
+                        retrieved_at=utc_now(), note="Dated items from TED / SkatteFUNN / GLEIF / DiBK whose own record names this organisation number")
     if not checked:
         return evidence("public_activity", "source_error", "official_public_activity", TED_SEARCH,
-                        note=f"TED and SkatteFUNN unavailable: {pa.errors}")
+                        note=f"TED, SkatteFUNN and GLEIF unavailable: {pa.errors}")
     return evidence("public_activity", "not_found", "official_public_activity", TED_SEARCH if "ted" in checked else SKATTEFUNN_LIST,
-                    value={"items": [], "sources": checked}, note="No TED award or SkatteFUNN project names this organisation number")
+                    value={"items": [], "sources": checked}, note="No TED award, SkatteFUNN project, LEI record or DiBK approval names this organisation number")

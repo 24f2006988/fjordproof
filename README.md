@@ -147,8 +147,12 @@ Adds to the starter (every external fact needs exact-entity proof; anything unpr
    industries, ...) as separate claims, plus `external_observations` in the starter kit's observation schema.
 7. Dated public activity (`public_activity`, one `public_activity_item` claim per item) from official sources keyed by the organisation number,
    never by name: EU TED contract award notices that list the company as a winner registered in Norway (TED API v3, one search per 50
-   companies), and the Research Council of Norway's list of approved SkatteFUNN R&D projects (one file per run). Each item has its own date
-   (TED publication date / SkatteFUNN decision date), title, direct URL and the literal row. Off: `SIGNALPOST_PUBLIC_ACTIVITY=off`.
+   companies), the Research Council of Norway's list of approved SkatteFUNN R&D projects (one file per run), GLEIF LEI records registered at
+   the Brønnøysund register under the organisation number (one search per 100 companies), and the DiBK central-approval register's public
+   enterprise page (/enterprises/<org>; robots.txt keeps it open, its /api/ path is not used) for construction and architecture/engineering
+   companies only (NACE 41-43, 71; one page each, a 404 = no approval). Each item has its own date (TED publication date / SkatteFUNN
+   decision date / LEI initial registration date / approval period start), title, direct URL and the literal source text.
+   Off: `SIGNALPOST_PUBLIC_ACTIVITY=off`.
 
 ### Output format
 Each envelope keeps the starter's native fields (`state`, `modules`, `profile`) and also carries the `OUTPUT_CONTRACT.md` fields
@@ -172,7 +176,9 @@ e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresult
 - Without keys (the default): no model, no paid API, USD 0. Sources: Brønnøysundregistrene open data (NLOD 2.0: Enhetsregisteret, roles,
   Regnskapsregisteret, annual-account copies), NAV's public job feed, company-owned websites (robots.txt respected, public-URL guard),
   EU TED notices (api.ted.europa.eu, free public API; EU open-data reuse, Commission Decision 2011/833/EU) and the Research Council of Norway's
-  published SkatteFUNN project list (forskningsradet.no; public-sector information, reuse assumed under NLOD 2.0).
+  published SkatteFUNN project list (forskningsradet.no; public-sector information, reuse assumed under NLOD 2.0); GLEIF LEI data
+  (api.gleif.org, free public API, CC0 1.0); DiBK sentral godkjenning enterprise pages (sgregister.dibk.no, public register of the
+  Norwegian Building Authority; public-sector information, reuse assumed under NLOD 2.0).
 - Declared cache: `data/discovery_index.json.gz` (224 KB, built by `scripts/build_discovery_index.py` from Common Crawl CC-MAIN-2026-39 home,
   contact, about and legal pages of .no domains). It holds candidate (domain, organisation number) pairs only, no facts; a site from it is
   verified live like any other candidate. Off: `SIGNALPOST_DISCOVERY_CACHE=off`.

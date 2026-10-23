@@ -90,7 +90,8 @@ def main() -> None:
     feed = JobFeed(days=a.job_feed_days)
     feed_deadline = time.monotonic() + max(60.0, budget.remaining_seconds - 600.0)
     threading.Thread(target=feed.load, kwargs={"deadline": feed_deadline}, daemon=True).start()
-    # TED awards + SkatteFUNN projects for the whole batch (a few requests per run), loaded while the registry pipeline runs.
+    # TED awards + SkatteFUNN projects + GLEIF LEI records for the whole batch (a few requests per run), loaded while the registry
+    # pipeline runs. DiBK approval pages need the industry code, so they are read after it.
     activity = PublicActivity()
     if os.environ.get("SIGNALPOST_PUBLIC_ACTIVITY", "").casefold() != "off":
         batch_orgs = []
@@ -101,7 +102,7 @@ def main() -> None:
                 batch_orgs.append(line.strip())
         threading.Thread(target=activity.load, args=(batch_orgs,), daemon=True).start()
     else:
-        activity.errors = {"ted": "switched off", "skattefunn": "switched off"}
+        activity.errors = {s: "switched off" for s in ("ted", "skattefunn", "gleif", "dibk")}
         activity.ready.set()
     rc = subprocess.run(cmd, stdout=subprocess.DEVNULL).returncode
     if rc != 0:
@@ -240,11 +241,16 @@ def main() -> None:
         list(pool.map(jobs, profiles))
     budget.record_requests(feed.requests)
     report["job_feed"] = {"active_ads": len(feed.ads), "requests": feed.requests, "error": feed.error, "days": a.job_feed_days}
+    if "dibk" not in activity.errors:
+        try:
+            activity.load_dibk(profiles, may_continue=lambda: not budget.is_exhausted(safety_margin_seconds=600.0, safety_margin_requests=300))
+        except Exception as exc:  # noqa: BLE001  never drop a company
+            activity.errors["dibk"] = type(exc).__name__
     activity.ready.wait(timeout=max(0.0, min(120.0, budget.remaining_seconds - 600.0)))
     for pr in profiles:
         pr["evidence"]["public_activity"] = fetch_activity(pr, activity) if activity.ready.is_set() else evidence(
             "public_activity", "source_error", "official_public_activity", "https://api.ted.europa.eu/v3/notices/search",
-            note="TED / SkatteFUNN not loaded within the time budget")
+            note="TED / SkatteFUNN / GLEIF not loaded within the time budget")
     budget.record_requests(activity.requests)
     report["public_activity"] = {"requests": activity.requests, "errors": activity.errors,
                                  "companies": sum(pr["evidence"]["public_activity"]["status"] == "available" for pr in profiles)}

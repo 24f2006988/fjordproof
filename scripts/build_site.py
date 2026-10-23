@@ -388,7 +388,7 @@ function activityPanel(d){
   box.append(el("p", {}, site ? [weak ? "Website listed in the registry (identity not confirmed by the page): " : "Verified website: ", link(site), refs(d, wcl?.e)] : "No website could be verified for this company."), d.website_note && site ? el("p", {class:"meta", text:"How it was matched: " + d.website_note}) : null);
   const act = [...activity(d)].sort((a,b) => (b.date||"").localeCompare(a.date||""));
   if (act.length) box.append(el("h3", {text:"Dated items"}), el("ul", {class:"plain"}, act.slice(0,30).map(x => el("li", {}, (x.date || "undated") + " – ", link(x.url, x.title || x.url)))),
-                             claim(d,"public_activity")?.s === "available" ? el("p", {class:"meta"}, "TED contract awards and SkatteFUNN projects name this organisation number ", refs(d, claim(d,"public_activity").e)) : null);
+                             claim(d,"public_activity")?.s === "available" ? el("p", {class:"meta"}, "Official records (TED contract awards, SkatteFUNN projects, GLEIF LEI, DiBK approvals) name this organisation number ", refs(d, claim(d,"public_activity").e)) : null);
   if (!v){ box.append(el("p", {class:"empty", text:NOT_FOUND_WHY.external_footprint})); return box; }
   if (v.contact && Object.keys(v.contact).length) box.append(el("p", {text:"Contact on the site: " + Object.entries(v.contact).map(([k,x]) => k + " " + x).join(", ")}));
   if (v.social_links && v.social_links.length) box.append(el("p", {}, "Social links listed on the company site: ", v.social_links.map((u,i) => [i ? " · " : "", link(typeof u === "string" ? u : u.url)])));

@@ -36,12 +36,31 @@ TED = {"notices": [
 ]}
 
 
-def _loaded(ted=TED, skf=SKF):
+def _lei(lei, org, jurisdiction="NO", ra="RA000472", status="ISSUED"):
+    return {"attributes": {"lei": lei, "entity": {"registeredAs": org, "jurisdiction": jurisdiction, "registeredAt": {"id": ra},
+                                                  "legalName": {"name": "WYSSEN NORGE AS"}},
+                           "registration": {"status": status, "initialRegistrationDate": "2021-05-19T00:00:00Z",
+                                            "nextRenewalDate": "2027-05-23T00:00:00Z"}}}
+
+
+GLEIF = {"data": [_lei("894500NF5J8BRCI2K308", ORG),
+                  _lei("5493000000000000PT01", ORG, jurisdiction="PT", ra="RA000513")]}  # same 9 digits, Portuguese register
+
+
+def _loaded(ted=TED, skf=SKF, gleif=GLEIF):
     p = pa.PublicActivity()
     p._post = lambda url, body: json.dumps(ted).encode()
-    p._get = lambda url: skf
+    p._get = lambda url: json.dumps(gleif).encode() if url.startswith(pa.GLEIF_SEARCH) else skf
     p.load([ORG, "999999999"])
     return p
+
+
+def _dibk_page(org=ORG, status="Foretaket har sentral godkjenning", period="17.03.2025&ndash;17.03.2028"):
+    row = ('<tr><td class="py-2 text-xl">Prosjekterende</td><td class="py-2 text-xl">Arkitektur</td>'
+           '<td class="py-2 text-xl">3</td><td class="py-2 text-xl text-end"><button>Vis betydning</button></td></tr>')
+    return (f'<h2 class="text-secondary">WYSSEN NORGE AS</h2><b class="text-secondary text-xl">Organisasjonsnummer</b><p class="text-xl">{org}</p>'
+            f'<h3 class="text-3xl text-secondary mb-5">{status}</h3><b class="text-secondary text-xl">Godkjenningsperiode:</b> '
+            f'<span class="text-xl">{period}</span><table><tbody>{row}{row}</tbody></table>')
 
 
 def test_ted_award_needs_a_norwegian_winner_at_the_same_position():
@@ -60,13 +79,51 @@ def test_fetch_activity_states():
     p = _loaded()
     rec = pa.fetch_activity({"organisation_number": ORG}, p)
     assert rec["status"] == "available"
-    assert [i["kind"] for i in rec["value"]["items"]] == ["rd_tax_credit_project", "public_contract_award"]  # newest first
+    assert [i["kind"] for i in rec["value"]["items"]] == ["rd_tax_credit_project", "public_contract_award", "lei_registration"]  # newest first
     assert all(i["content_sha256"] and i["retrieved_at"] for i in rec["value"]["items"])
     assert pa.fetch_activity({"organisation_number": "123456789"}, p)["status"] == "not_found"
     broken = pa.PublicActivity()
     broken._post = broken._get = lambda *a: (_ for _ in ()).throw(OSError("down"))
     broken.load([ORG])
     assert pa.fetch_activity({"organisation_number": ORG}, broken)["status"] == "source_error"
+
+
+def test_gleif_record_must_point_at_the_norwegian_register():
+    items = _loaded().gleif[ORG]
+    assert [(i["lei"], i["date"], i["status"]) for i in items] == [("894500NF5J8BRCI2K308", "2021-05-19", "ISSUED")]
+    assert items[0]["url"] == "https://api.gleif.org/api/v1/lei-records/894500NF5J8BRCI2K308"
+    assert "registeredAs 916340257, registeredAt RA000472" in items[0]["span"]
+
+
+def test_dibk_page_needs_the_same_org_number_a_valid_approval_and_a_period():
+    url = pa.DIBK_PAGE.format(org=ORG)
+    [item] = pa.parse_dibk(_dibk_page(), ORG, url)
+    assert (item["date"], item["period"], item["areas"]) == ("2025-03-17", "2025-03-17/2028-03-17", ["Prosjekterende - Arkitektur, tiltaksklasse 3"])
+    assert pa.parse_dibk(_dibk_page(org="999999999"), ORG, url) == []
+    assert pa.parse_dibk(_dibk_page(status="Foretaket har ikke sentral godkjenning"), ORG, url) == []
+    assert pa.parse_dibk(_dibk_page(period="ukjent"), ORG, url) == []
+
+
+def test_dibk_only_for_building_and_architecture_companies_and_404_means_none():
+    import urllib.error
+    p = _loaded()
+    asked = []
+
+    def get(url):
+        asked.append(url)
+        if url.endswith(ORG):
+            return _dibk_page().encode()
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+    p._get = get
+    p.load_dibk([{"organisation_number": ORG, "industry_code": "71.110"}, {"organisation_number": "888888888", "industry_code": "43.320"},
+                 {"organisation_number": "123456789", "industry_code": "68.209"}])
+    assert sorted(asked) == sorted(pa.DIBK_PAGE.format(org=o) for o in (ORG, "888888888"))
+    rec = pa.fetch_activity({"organisation_number": ORG}, p)
+    dibk = [i for i in rec["value"]["items"] if i["kind"] == "central_approval"]
+    assert len(dibk) == 1 and dibk[0]["content_sha256"] and "dibk" in rec["value"]["sources"]
+    other = pa.fetch_activity({"organisation_number": "888888888"}, p)
+    assert other["status"] == "not_found" and "dibk" in other["value"]["sources"]
+    assert "dibk" not in pa.fetch_activity({"organisation_number": "123456789"}, p)["value"]["sources"]
 
 
 def test_skattefunn_column_change_is_an_error_not_a_guess():
@@ -89,10 +146,12 @@ def test_contract_claims_observations_and_recent_activity():
     env = to_contract(terminal_envelope(profile, run_id="t", modules=["registry_live", "public_activity"],
                                         started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z"))
     items = [c for c in env["claims"] if c["field"] == "public_activity_item"]
-    assert len(items) == 2 and all(c["evidence_ids"] and c["source_path"] for c in items)
+    assert len(items) == 3 and all(c["evidence_ids"] and c["source_path"] for c in items)
     ev = {e["id"]: e for e in env["evidence"]}
     assert any("#row=" in ev[c["evidence_ids"][0]]["source_record"] for c in items)
-    assert sum(o["source_class"] == "official_public_activity" for o in env["external_observations"]) == 2
+    obs = [o for o in env["external_observations"] if o["source_class"] == "official_public_activity"]
+    assert len(obs) == 3 and {o["platform"] for o in obs} == {"ted", "skattefunn", "gleif"}
     recent = next(s for s in env["synthesis"]["sections"] if s["label"] == "Recent activity")
     assert "public contract awarded (TED) 2024-07-19 by Statens vegvesen" in recent["text"]
     assert "SkatteFUNN R&D project approved 2024-08-30" in recent["text"]
+    assert "LEI first registered (GLEIF) 2021-05-19" in recent["text"]

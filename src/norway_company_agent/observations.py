@@ -13,6 +13,15 @@ SOCIAL_PLATFORMS = {"facebook": "facebook", "instagram": "instagram", "linkedin"
                     "x": "x", "twitter": "x", "tiktok": "tiktok"}
 
 
+# Dated public-activity kinds: (platform, identity proof, acquisition mode). Each source names the organisation number itself.
+ACTIVITY_SOURCES = {
+    "public_contract_award": ("ted", "winner_organisation_number_in_ted_notice", "official_api"),
+    "rd_tax_credit_project": ("skattefunn", "organisation_number_in_skattefunn_list", "official_bulk_file"),
+    "lei_registration": ("gleif", "registered_as_organisation_number_at_brreg_in_lei_record", "official_api"),
+    "central_approval": ("dibk", "organisation_number_on_dibk_enterprise_page", "official_page"),
+}
+
+
 def _id(kind: str, org: str, *parts: Any) -> str:
     return f"fjordproof-{kind}-" + hashlib.sha256("|".join([org, *map(str, parts)]).encode("utf-8")).hexdigest()[:24]
 
@@ -93,14 +102,13 @@ def build_observations(org: str, records: dict[str, dict[str, Any]], *, web_ok: 
     for i in ((act.get("value") or {}).get("items") or []) if act.get("status") == "available" else []:
         if not (i.get("content_sha256") and i.get("date") and i.get("title")):
             continue
-        ted = i.get("kind") == "public_contract_award"
-        out.append(_obs(org, "activity", f"{i['url']}|{i.get('row') or i.get('notice')}", platform="ted" if ted else "skattefunn",
+        platform, proof, mode = ACTIVITY_SOURCES.get(i.get("kind"), ACTIVITY_SOURCES["rd_tax_credit_project"])
+        out.append(_obs(org, "activity", f"{i['url']}|{i.get('row') or i.get('notice') or i.get('lei') or i['date']}", platform=platform,
                         signal_type="public_post", source_url=i["url"],
                         **({"source_record": f"{i['url']}#row={i['row']}"} if i.get("row") else {}),
                         retrieved_at=i.get("retrieved_at"), content_sha256=i["content_sha256"], published_at=i["date"],
-                        identity_proof=[{"type": "winner_organisation_number_in_ted_notice" if ted else "organisation_number_in_skattefunn_list",
-                                         "value": org}],
-                        acquisition_mode="official_api" if ted else "official_bulk_file", source_class="official_public_activity",
+                        identity_proof=[{"type": proof, "value": org}],
+                        acquisition_mode=mode, source_class="official_public_activity",
                         evidence_span=i["span"][:240], strategy="official_public_activity"))
     wf = records.get("workforce") or {}
     if wf_present:
