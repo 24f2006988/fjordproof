@@ -79,7 +79,9 @@ def assess_website_identity(profile: dict[str, Any]) -> dict[str, Any]:
     is_parked = any(marker in normalized_raw for marker in parked_markers) or (
         main_excerpt_len < 300 and any(marker in normalized_raw for marker in short_page_parked_markers)
     )
-    is_business_sports_club = bool(re.search(r"(?:^|\s)B\.?\s*I\.?\s*L\.?(?:\s|$)", str(profile.get("name") or ""), re.I))
+    # BIL = bedriftsidrettslag, an association; in a company's name (THANSTRØM BIL AS) "bil" is the word for car.
+    is_business_sports_club = bool(re.search(r"(?:^|\s)B\.?\s*I\.?\s*L\.?(?:\s|$)", str(profile.get("name") or ""), re.I)) and str(
+        profile.get("legal_form") or "").upper() not in {"AS", "ASA", "ENK", "ANS", "DA", "NUF", "SA", "KS"}
     if is_business_sports_club and "bedriftsidrett" not in normalized_candidate_text and "b i l" not in normalized_candidate_text and not has_homepage_org:
         score = 0.3
         reasons.append("business sports-club entity points to the operating company's site without club evidence")

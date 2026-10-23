@@ -343,3 +343,18 @@ class CrawlIndexOnlyRaisesPriority(unittest.TestCase):
         with mock.patch.object(footprint_plus.discovery_index, "candidates", return_value=[("rbproffpartner.no", "https://rbproffpartner.no/kontakt")]):
             hosts = footprint_plus.candidate_hosts(profile)
         self.assertEqual(hosts[0], ("rbproffpartner.no", "name_slug_guess"))
+
+
+class BusinessSportsClubTests(unittest.TestCase):
+    def _score(self, name, form):
+        from norway_company_agent.identity import assess_website_identity
+        site = {"source_url": "https://example.no/", "value": {"final_url": "https://example.no/", "title": name.title(),
+                                                                "main_text_excerpt": "Velkommen " * 30}}
+        return assess_website_identity({"organisation_number": "964348030", "name": name, "legal_form": form,
+                                        "evidence": {"website": site}})["reasons"]
+
+    def test_bil_in_a_company_name_means_car_not_sports_club(self):
+        self.assertNotIn("business sports-club entity points to the operating company's site without club evidence",
+                         self._score("THANSTRØM BIL AS", "AS"))
+        self.assertIn("business sports-club entity points to the operating company's site without club evidence",
+                      self._score("EQUINOR BIL", "FLI"))
