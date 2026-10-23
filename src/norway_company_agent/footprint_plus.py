@@ -169,9 +169,10 @@ def _slug_variants(text: str) -> set[str]:
 
 
 # Candidate sources named by a third party (registry e-mail, NAV ad, crawl cache): address-only proof is never enough.
-STRICT_METHODS = {"registry_email_domain", "job_feed_homepage", "discovery_index"}
-# Crawl-cache candidates are published only on the exact organisation number printed live today.
-EXACT_ONLY_METHODS = {"discovery_index"}
+STRICT_METHODS = {"registry_email_domain", "job_feed_homepage", "discovery_index", "other_tld_guess"}
+# Crawl-cache candidates and non-.no/.com name guesses are published only on the exact organisation number printed live today.
+EXACT_ONLY_METHODS = {"discovery_index", "other_tld_guess"}
+OTHER_TLDS = ("io", "se", "dk", "net", "as", "eu", "co")  # ~8% of sites agreed by other entrants (competitor sweep 2026-10-23)
 
 def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
     """(host, method) pairs, best first. Method decides how strict the identity gate must be."""
@@ -391,7 +392,12 @@ def candidate_hosts(profile: dict[str, Any]) -> list[tuple[str, str]]:
                 no_hosts.append((host, method))
             else:
                 other_hosts.append((host, method))
-    return (no_hosts + other_hosts)[:16]
+    # Other endings (aquapredict.io), after the regular candidates: the main name slugs only, published on the exact
+    # organisation number alone (EXACT_ONLY_METHODS). A host that does not resolve costs one DNS lookup, no request.
+    bases = list(dict.fromkeys(h.removesuffix(".no") for h, m in out if m == "name_slug_guess" and h.endswith(".no")))
+    tld_hosts = [(f"{b}.{tld}", "other_tld_guess") for b in [b for b in bases if len(b.replace("-", "")) >= 5][:2]
+                 for tld in OTHER_TLDS if f"{b}.{tld}" not in seen]
+    return (no_hosts + other_hosts)[:16] + tld_hosts
 
 
 def _is_care_of(profile: dict[str, Any] | None) -> bool:

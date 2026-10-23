@@ -47,6 +47,18 @@ class HardProofTests(unittest.TestCase):
             proof = footprint_plus.hard_identity_proof(_profile(), {"source_url": "https://shop.no/"})[0]
         self.assertIn("exact organisation number printed on https://shop.no/policies/terms-of-service", proof or "")
 
+    def test_other_tld_guesses_come_last_and_need_the_exact_org_number(self):
+        profile = {"organisation_number": "931467425", "name": "AQUAPREDICT AS", "evidence": {"registry": {"value": {}}}}
+        with mock.patch.object(footprint_plus.discovery_index, "candidates", lambda p: []):
+            hosts = footprint_plus.candidate_hosts(profile)
+        tld = [h for h, m in hosts if m == "other_tld_guess"]
+        self.assertIn("aquapredict.io", tld)
+        self.assertTrue(all(m == "other_tld_guess" for _, m in hosts[len(hosts) - len(tld):]))
+        self.assertIn("other_tld_guess", footprint_plus.EXACT_ONLY_METHODS)
+        # address proof is never enough for an other-ending guess
+        self.assertFalse(footprint_plus._accept_proof("registered street address and postcode printed on https://x.io/",
+                                                      {"score": 0.95}, "other_tld_guess", profile))
+
     def test_org_number_inside_longer_digit_string_is_not_proof(self):
         self.assertIsNone(_proof({"https://example.no/": "Ring 47985589003 eller 9855890031"}))
 
