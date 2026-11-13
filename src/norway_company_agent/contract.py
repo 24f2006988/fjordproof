@@ -443,6 +443,8 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
             "address": loc.get("address"),
             "industry": loc.get("industry"),
             "employees": loc.get("employees"),
+            **({"email": loc["email"]} if loc.get("email") else {}),
+            **({"phone": loc["phone"]} if loc.get("phone") else {}),
         }
         for loc in loc_list
         if loc.get("name") or loc.get("organisation_number")
@@ -485,7 +487,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         claims.append({
             "field": fld,
             "value": val if present else None,
-            "availability": "available" if present else ("ambiguous" if web_ambiguous else "not_available" if web_rec.get("status") in {"available", "not_found"} else "failed"),
+            "availability": "available" if present else ("blocked" if web_rec.get("status") == "blocked" else "ambiguous" if web_ambiguous else "not_available" if web_rec.get("status") in {"available", "not_found"} else "failed"),
             "confidence": web_conf if present else 0.0,
             "evidence_ids": ["ev-website"] if present and "website" in records else [],
             **({"raw_value": val, "source_path": f"{web_val.get('final_url') or web_rec.get('source_url')} {selector}"} if present else {}),
@@ -541,7 +543,7 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
         return ids or (["ev-external_footprint"] if "external_footprint" in records else [])
 
     for fld, key, sks in (("careers_urls", "careers_urls", ("careers_urls",)), ("news_urls", "news_pages", ("news_pages",)),
-                          ("social_profiles", "social_links", ("social_links",)), ("site_contact", "contact", ("contact_email", "contact_phone")),
+                          ("social_profiles", "social_links", ("social_links",)), ("site_contact", "contact", ("contact_email", "contact_phone", "contact_emails", "contact_phones")),
                           ("dated_activity", "dated_activity", ("dated_activity",))):
         val = fp_val.get(key)
         present = fp_ok and val not in (None, "", [], {})

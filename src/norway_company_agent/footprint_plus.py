@@ -11,6 +11,7 @@ import os
 import re
 import socket
 import threading
+import time
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -817,7 +818,11 @@ def hard_identity_proof(
 
 
 _NET = threading.local()  # per-thread count of timeouts / dropped connections seen by _get (not 404s or policy refusals)
-TRANSIENT_MARKERS = ("timed out", "timeout", "reset", "remote end closed", "remotedisconnected", "incompleteread", "temporarily")
+TRANSIENT_MARKERS = (
+    "timed out", "timeout", "reset", "remote end closed", "remotedisconnected", "incompleteread", "temporarily",
+    "http 429", "http 500", "http 502", "http 503", "http 504",
+)
+TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
 
 
 def _is_transient(exc: BaseException | str) -> bool:
@@ -847,15 +852,27 @@ def _get(url: str, timeout: float = 8.0, max_bytes: int = 2_000_000) -> tuple[by
             _NET.last_requests = r_req
             return None, None
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with SAFE_OPENER.open(req, timeout=timeout) as r:
-            final = r.geturl()
-            assert_public_url(final)
-            raw = r.read(max_bytes)
-            ctype = (r.headers.get("content-type", "") or "").lower()
-        _NET.last_requests = r_req + 1
-        if raw and ("html" in ctype or "xml" in ctype or "json" in ctype or "text" in ctype or not ctype):
-            _cache_page(url, raw, final)
-        return raw, final
+        for attempt in range(2):
+            try:
+                with SAFE_OPENER.open(req, timeout=timeout) as r:
+                    final = r.geturl()
+                    assert_public_url(final)
+                    raw = r.read(max_bytes)
+                    ctype = (r.headers.get("content-type", "") or "").lower()
+                if raw and ("html" in ctype or "xml" in ctype or "text" in ctype or not ctype):
+                    raw = re.sub(rb"</br\s*>", b"<br>", raw, flags=re.I)
+                _NET.last_requests = r_req + attempt + 1
+                if raw and ("html" in ctype or "xml" in ctype or "json" in ctype or "text" in ctype or not ctype):
+                    _cache_page(url, raw, final)
+                return raw, final
+            except urllib.error.HTTPError as exc:
+                if exc.code in TRANSIENT_HTTP_CODES and attempt == 0:
+                    time.sleep(1.0)
+                    continue
+                _NET.last_requests = r_req + attempt + 1
+                if exc.code in TRANSIENT_HTTP_CODES:
+                    _NET.count = _transient_count() + 1
+                return None, None
     except urllib.error.HTTPError:
         _NET.last_requests = r_req + 1
         return None, None
@@ -1324,7 +1341,7 @@ def _article_links(raw: bytes, base: str, host: str, section: str) -> list[str]:
 
 
 def _news_articles(sections: list[str], candidates: list[str], host: str, max_articles: int = MAX_ARTICLE_PAGES,
-                   about: list[list[str]] | None = None) -> tuple[list[dict[str, str]], list[dict[str, str]], int]:
+                   about: list[list[str]] | None = None, timeout: float = 5.0) -> tuple[list[dict[str, str]], list[dict[str, str]], int]:
     """Article-level news items (title, direct URL, publication date) read from each article page itself.
 
     Returns (items, provenance per item, requests used). At most one section page and ``max_articles`` article pages.
@@ -1337,14 +1354,14 @@ def _news_articles(sections: list[str], candidates: list[str], host: str, max_ar
     ]
     if sections and len(urls) < max_articles:
         _NET.last_requests = 1
-        sraw, sfinal = _get(sections[0], timeout=5.0)
+        sraw, sfinal = _get(sections[0], timeout=timeout)
         requests += getattr(_NET, "last_requests", 1)
         if sraw:
             urls += [u for u in _article_links(sraw, sfinal or sections[0], host, sfinal or sections[0]) if u not in urls]
     items, prov = [], []
     for url in urls[:max_articles]:
         _NET.last_requests = 1
-        araw, afinal = _get(url, timeout=5.0)
+        araw, afinal = _get(url, timeout=timeout)
         requests += getattr(_NET, "last_requests", 1)
         meta = _article_meta(araw, about) if araw else None
         if not meta:
@@ -1360,18 +1377,19 @@ def _news_articles(sections: list[str], candidates: list[str], host: str, max_ar
     return items, prov, requests
 
 
-def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
+def extract_footprint(profile: dict[str, Any], website: dict[str, Any], timeout: float = 8.0) -> tuple[dict[str, Any], dict[str, int]]:
     """Dated activity, careers entry points, contact and company-owned profiles from a VERIFIED website only.
 
     ``item_sources`` records, per published item, the exact page it was read from (source_url, sha256 of the
     bytes fetched, literal span) so every claim can cite the page that really contains it.
     """
+    sub_timeout = max(5.0, min(timeout, 10.0))
     metrics = {"requests": 0, "bytes": 0}
     source = website.get("source_url") or ""
     value = website.get("value") or {}
     assessment = value.get("identity_assessment") or {}
     if website.get("status") == "available" and assessment.get("publishable") is not True and assessment.get("score", 0) >= 0.3 and source:
-        proof, pm = hard_identity_proof(profile, website, MAX_PROOF_PAGES, 8.0)
+        proof, pm = hard_identity_proof(profile, website, MAX_PROOF_PAGES, timeout)
         metrics["requests"] += pm["requests"]
         if _accept_proof(proof, assessment, "registry_email_domain"):
             assessment["publishable"] = True
@@ -1389,7 +1407,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         return evidence("external_footprint", "not_found", "company_owned_site", "https://data.brreg.no",
                         note="No identity-verified company website; nothing published."), metrics
     _NET.last_requests = 2
-    raw, final = _get(source)
+    raw, final = _get(source, timeout=timeout)
     metrics["requests"] += getattr(_NET, "last_requests", 2)
     careers, news_pages, feeds, contact, job_postings = [], [], [], {}, []
     contact_links = []
@@ -1555,7 +1573,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     craw, cfinal, csha = None, None, None
     if contact_links:
         _NET.last_requests = 1
-        craw, cfinal = _get(contact_links[0], timeout=5.0)
+        craw, cfinal = _get(contact_links[0], timeout=sub_timeout)
         metrics["requests"] += getattr(_NET, "last_requests", 1)
         if craw:
             metrics["bytes"] += len(craw)
@@ -1591,7 +1609,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
     feed_items: list[dict[str, str]] = []
     for feed in feeds[:2]:
         _NET.last_requests = 1
-        fraw, ffinal = _get(feed)
+        fraw, ffinal = _get(feed, timeout=sub_timeout)
         metrics["requests"] += getattr(_NET, "last_requests", 1)
         if fraw:
             metrics["bytes"] += len(fraw)
@@ -1617,7 +1635,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
         sections = [u for u in news_pages if (_segments(urllib.parse.urlparse(u).path) or [""])[-1] in NEWS_SEGMENTS]
         candidates = [i["url"] for i in feed_items] + [d["url"] for d in sm_dated] + [u for u in sm_news if u not in sections]
         arts, art_prov, art_requests = _news_articles(sections, list(dict.fromkeys(candidates)), host,
-                                                      about=_about_names(profile, final))
+                                                      about=_about_names(profile, final), timeout=sub_timeout)
         metrics["requests"] += art_requests
         activity = arts
         for p in art_prov:
@@ -1720,7 +1738,7 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             ct_host = ct_p.netloc.lower()
             if (base_domain and (ct_host == base_domain or ct_host.endswith("." + base_domain))) or any(d in ct_host for d in ("teamtailor.com", "recman.no", "jobbnorge.no", "webcruiter.no")):
                 _NET.last_requests = 1
-                ct_raw, ct_final = _get(career_target, timeout=5.0)
+                ct_raw, ct_final = _get(career_target, timeout=sub_timeout)
                 metrics["requests"] += getattr(_NET, "last_requests", 1)
                 if ct_raw:
                     metrics["bytes"] += len(ct_raw)
@@ -1780,6 +1798,12 @@ def extract_footprint(profile: dict[str, Any], website: dict[str, Any]) -> tuple
             if phone not in contact_phones and len(contact_phones) < MAX_CONTACTS:
                 contact_phones.append(phone)
                 note("contact_phones", phone, c_src, c_sha, span)
+    if contact.get("email") and contact["email"] not in contact_emails and len(contact_emails) < MAX_CONTACTS:
+        contact_emails.insert(0, contact["email"])
+        for src in item_sources.get("contact_email", []):
+            if src.get("item") == contact["email"]:
+                item_sources.setdefault("contact_emails", []).insert(0, dict(src))
+                break
     if contact_emails:
         contact["emails"] = contact_emails
     if contact_phones:

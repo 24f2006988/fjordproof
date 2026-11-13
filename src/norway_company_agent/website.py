@@ -419,7 +419,9 @@ def fetch_website(url: str | None, *, timeout: float = 15.0, max_bytes: int = 2_
                 final_url = response.geturl()
                 assert_public_url(final_url)
             _cache_page(normalized, raw, final_url)
-        html = raw.decode("utf-8", errors="replace")
+            if final_url and final_url != normalized:
+                _cache_page(final_url, raw, final_url)
+        html = re.sub(r"</br\s*>", "<br>", raw.decode("utf-8", errors="replace"), flags=re.I)
         soup = BeautifulSoup(html, "lxml")
         structured = extruct.extract(html, base_url=final_url, syntaxes=["json-ld", "microdata", "opengraph"])
         raw_text = trafilatura.extract(html, url=final_url, include_links=False, include_tables=False, favor_precision=True) or ""

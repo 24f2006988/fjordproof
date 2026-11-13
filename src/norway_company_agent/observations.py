@@ -13,12 +13,12 @@ SOCIAL_PLATFORMS = {"facebook": "facebook", "instagram": "instagram", "linkedin"
                     "x": "x", "twitter": "x", "tiktok": "tiktok"}
 
 
-# Dated public-activity kinds: (platform, identity proof, acquisition mode). Each source names the organisation number itself.
+# Dated public-activity kinds: (platform, identity proof, acquisition mode, source_system). Each source names the organisation number itself.
 ACTIVITY_SOURCES = {
-    "public_contract_award": ("ted", "winner_organisation_number_in_ted_notice", "official_api"),
-    "rd_tax_credit_project": ("skattefunn", "organisation_number_in_skattefunn_list", "official_bulk_file"),
-    "lei_registration": ("gleif", "registered_as_organisation_number_at_brreg_in_lei_record", "official_api"),
-    "central_approval": ("dibk", "organisation_number_on_dibk_enterprise_page", "official_page"),
+    "public_contract_award": ("news", "winner_organisation_number_in_ted_notice", "official_api", "ted"),
+    "rd_tax_credit_project": ("news", "organisation_number_in_skattefunn_list", "permitted_public_page", "skattefunn"),
+    "lei_registration": ("company_directory", "registered_as_organisation_number_at_brreg_in_lei_record", "official_api", "gleif"),
+    "central_approval": ("company_directory", "organisation_number_on_dibk_enterprise_page", "permitted_public_page", "dibk"),
 }
 
 
@@ -102,9 +102,9 @@ def build_observations(org: str, records: dict[str, dict[str, Any]], *, web_ok: 
     for i in ((act.get("value") or {}).get("items") or []) if act.get("status") == "available" else []:
         if not (i.get("content_sha256") and i.get("date") and i.get("title")):
             continue
-        platform, proof, mode = ACTIVITY_SOURCES.get(i.get("kind"), ACTIVITY_SOURCES["rd_tax_credit_project"])
+        platform, proof, mode, source_sys = ACTIVITY_SOURCES.get(i.get("kind"), ACTIVITY_SOURCES["rd_tax_credit_project"])
         out.append(_obs(org, "activity", f"{i['url']}|{i.get('row') or i.get('notice') or i.get('lei') or i['date']}", platform=platform,
-                        signal_type="public_post", source_url=i["url"],
+                        source_system=source_sys, signal_type="public_post", source_url=i["url"],
                         **({"source_record": f"{i['url']}#row={i['row']}"} if i.get("row") else {}),
                         retrieved_at=i.get("retrieved_at"), content_sha256=i["content_sha256"], published_at=i["date"],
                         identity_proof=[{"type": proof, "value": org}],

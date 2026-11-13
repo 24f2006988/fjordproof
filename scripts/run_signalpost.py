@@ -167,7 +167,7 @@ def main() -> None:
             if found:
                 profile["evidence"]["website"] = found
                 profile["website"] = found["source_url"]
-                fp, fm = extract_footprint(profile, found)
+                fp, fm = extract_footprint(profile, found, timeout=12.0)
                 used += fm["requests"]
                 profile["evidence"]["external_footprint"] = fp
                 profile["changes_since_previous"] = material_changes(previous.get(profile["organisation_number"]), profile)
@@ -188,7 +188,7 @@ def main() -> None:
         if budget.is_exhausted(safety_margin_seconds=180.0, safety_margin_requests=100):
             return profile
         try:
-            fp, m = extract_footprint(profile, profile["evidence"]["website"])
+            fp, m = extract_footprint(profile, profile["evidence"]["website"], timeout=12.0)
         except Exception:  # noqa: BLE001  the first-pass result stands
             return profile
         if fp.get("status") == "available":

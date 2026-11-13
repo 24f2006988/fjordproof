@@ -361,6 +361,48 @@ class ContractAdapterTest(unittest.TestCase):
         self.assertEqual(len(by("roles")), 1)
         self.assertEqual(len(by("social_profiles")), 1)
 
+    def test_blocked_website_and_subunit_contacts_and_freemail_atomic(self):
+        org = "123456789"
+        site_sha = "b" * 64
+        profile = {
+            "organisation_number": org, "name": "Eksempel AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
+            "evidence": {
+                "registry_live": evidence("registry_live", "available", "official_registry_live", f"https://data.brreg.no/enhetsregisteret/api/enheter/{org}", value={"a": 1}),
+                "website": evidence("website", "blocked", "registry_linked_company_website", "https://blocked.no/", note="robots.txt disallowed"),
+            },
+            "run_metrics": {"requests": 2, "latencies_ms": [10]},
+        }
+        blocked_env = to_contract(terminal_envelope(profile, run_id="t", modules=["registry_live", "website"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z"))
+        b_claims = {c["field"]: c for c in blocked_env["claims"]}
+        self.assertEqual(b_claims["official_website"]["availability"], "blocked")
+        self.assertEqual(b_claims["website_title"]["availability"], "blocked")
+        self.assertEqual(b_claims["website_description"]["availability"], "blocked")
+
+        profile2 = {
+            "organisation_number": org, "name": "Eksempel AS", "legal_form": "AS", "bankrupt": False, "liquidating": False,
+            "evidence": {
+                "registry_live": evidence("registry_live", "available", "official_registry_live", f"https://data.brreg.no/enhetsregisteret/api/enheter/{org}", value={"a": 1}),
+                "locations": evidence("locations", "available", "official_subunits", f"https://data.brreg.no/enhetsregisteret/api/underenheter?overordnetEnhet={org}",
+                                      value={"locations": [{"organisation_number": "987654321", "name": "Eksempel Avd", "email": "avd@eksempel.no", "phone": "22112211"}]}),
+                "website": evidence("website", "available", "discovered_company_website", "https://eksempel.no/",
+                                    value={"title": "Eksempel AS", "identity_assessment": {"publishable": True, "score": 1.0}}),
+                "external_footprint": evidence("external_footprint", "available", "company_owned_site", "https://eksempel.no/",
+                                               value={"contact": {"email": "firma@gmail.com", "emails": ["firma@gmail.com"]},
+                                                      "item_sources": {"contact_emails": [{"item": "firma@gmail.com", "source_url": "https://eksempel.no/kontakt",
+                                                                                           "sha256": site_sha, "span": "E-post: firma@gmail.com"}]}}),
+            },
+            "run_metrics": {"requests": 3, "latencies_ms": [10]},
+        }
+        env2 = to_contract(terminal_envelope(profile2, run_id="t", modules=["registry_live", "locations", "website", "external_footprint"], started_at="2026-01-01T00:00:00Z", completed_at="2026-01-01T00:00:01Z"))
+        c2 = {c["field"]: c for c in env2["claims"]}
+        ev2 = {e["id"]: e for e in env2["evidence"]}
+        self.assertEqual(c2["registered_workplaces"]["value"][0]["email"], "avd@eksempel.no")
+        self.assertEqual(c2["registered_workplaces"]["value"][0]["phone"], "22112211")
+        wp = next(c for c in env2["claims"] if c["field"] == "workplace")
+        self.assertEqual(wp["value"]["email"], "avd@eksempel.no")
+        self.assertEqual(ev2[c2["site_contact"]["evidence_ids"][0]]["source_url"], "https://eksempel.no/kontakt")
+        self.assertEqual(c2["contact_email"]["value"], "firma@gmail.com")
+
 
 if __name__ == "__main__":
     unittest.main()

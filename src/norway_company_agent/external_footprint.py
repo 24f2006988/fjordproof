@@ -26,6 +26,10 @@ PLATFORMS = {
     "wikidata",
     "wikipedia",
     "company_directory",
+    "ted",
+    "skattefunn",
+    "gleif",
+    "dibk",
 }
 
 SIGNAL_TYPES = {

@@ -8,6 +8,7 @@ and the number sits on the same row in the field's fixed two-decimal format. Any
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import os
 import re
@@ -116,21 +117,36 @@ def download_copy(org: str, year: str) -> tuple[tuple[bytes | None, str | None, 
     The runner calls this ahead of time, while the website stage is busy, so the OCR stage does not wait on the network."""
     key = (org, str(year))
     with _downloads_lock:
-        if key in _downloads:
-            return _downloads[key], 0
+        cached = _downloads.get(key)
+        if cached is not None and (cached[0] is not None or cached[1] == "not_found"):
+            return cached, 0
     url = BRREG_ACCOUNT_PDF.format(org=org, year=year)
-    _reserve_history_slot()  # same Brreg endpoint family as the filings list: ~30 request starts per minute
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "builderr-signalpost-poc/0.1 (+https://builderr.ai)"})
-        with urllib.request.urlopen(req, timeout=40) as response:
-            result = (response.read(), None, None, utc_now())
-    except urllib.error.HTTPError as exc:
-        result = (None, "not_found" if exc.code in {404, 410} else "source_error", f"HTTP {exc.code}", utc_now())
-    except Exception as exc:  # noqa: BLE001  network failure is reported per company
-        result = (None, "source_error", type(exc).__name__, utc_now())
+    result: tuple[bytes | None, str | None, str | None, str] = (None, "source_error", "unknown", utc_now())
+    used = 0
+    for attempt in range(2):
+        _reserve_history_slot()  # same Brreg endpoint family as the filings list: ~30 request starts per minute
+        used += 1
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "builderr-signalpost-poc/0.1 (+https://builderr.ai)"})
+            with urllib.request.urlopen(req, timeout=40) as response:
+                result = (response.read(), None, None, utc_now())
+            break
+        except urllib.error.HTTPError as exc:
+            status = "not_found" if exc.code in {404, 410} else "source_error"
+            result = (None, status, f"HTTP {exc.code}", utc_now())
+            if exc.code in {429, 500, 502, 503, 504} and attempt == 0:
+                time.sleep(1.0)
+                continue
+            break
+        except Exception as exc:  # noqa: BLE001  network failure is reported per company
+            result = (None, "source_error", type(exc).__name__, utc_now())
+            if isinstance(exc, (http.client.IncompleteRead, urllib.error.URLError, TimeoutError, ConnectionError)) and attempt == 0:
+                time.sleep(1.0)
+                continue
+            break
     with _downloads_lock:
         _downloads[key] = result
-    return result, 1
+    return result, used
 
 
 def fetch_workforce(org: str, year: str | None, profile: dict[str, Any] | None = None) -> tuple[dict[str, Any], int]:

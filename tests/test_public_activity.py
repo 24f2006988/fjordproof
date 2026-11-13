@@ -149,8 +149,11 @@ def test_contract_claims_observations_and_recent_activity():
     assert len(items) == 3 and all(c["evidence_ids"] and c["source_path"] for c in items)
     ev = {e["id"]: e for e in env["evidence"]}
     assert any("#row=" in ev[c["evidence_ids"][0]]["source_record"] for c in items)
+    from norway_company_agent.external_footprint import publishable_observation, validate_observation
     obs = [o for o in env["external_observations"] if o["source_class"] == "official_public_activity"]
-    assert len(obs) == 3 and {o["platform"] for o in obs} == {"ted", "skattefunn", "gleif"}
+    assert len(obs) == 3 and {o["source_system"] for o in obs} == {"ted", "skattefunn", "gleif"}
+    assert {o["platform"] for o in obs} == {"news", "company_directory"}
+    assert all(publishable_observation(o) and not validate_observation(o) for o in obs)
     recent = next(s for s in env["synthesis"]["sections"] if s["label"] == "Recent activity")
     assert "public contract awarded (TED) 2024-07-19 by Statens vegvesen" in recent["text"]
     assert "SkatteFUNN R&D project approved 2024-08-30" in recent["text"]

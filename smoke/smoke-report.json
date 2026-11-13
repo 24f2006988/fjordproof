@@ -1,7 +1,7 @@
 {
-  "run_id": "r11c-smoke",
+  "run_id": "r12-smoke",
   "started_at": "2026-10-23T12:35:14.720761Z",
-  "completed_at": "2026-10-23T13:02:57.032075Z",
+  "completed_at": "2026-11-13T12:56:34.339481Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -30,7 +30,7 @@
     "bulk_note": "bulk snapshot not supplied"
   },
   "operations": {
-    "requests": 1719,
+    "requests": 1728,
     "bytes": 2454952,
     "p50_ms": 1342,
     "p95_ms": 3437,

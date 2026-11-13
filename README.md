@@ -189,12 +189,13 @@ e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresult
 - OCR uses half the CPU cores as workers (`--ocr-workers`), each with its own 2-thread engine; annual-account copies download during the
   website stage. A built-in budget guard stops new work before 40 minutes and 1,900 requests per 100 companies (official limit 2,000)
   and still emits every envelope.
-- Measured (smoke-100 `r11c-smoke`, from a clean clone after `uv sync`, no keys, 12-core laptop): 100/100 envelopes, validation passed,
-  1,719 requests, 28 minutes on a slow evening network (19 minutes in an earlier run of the same code), 0 uncited claims, 12 verified websites
-  (13 in the earlier run; one shop site answered 429 after repeated test runs), man-years for 71 companies, dated public activity
-  (TED/SkatteFUNN/GLEIF/DiBK) for 8 companies. A second set of 100 other companies (no keys): 1,744 requests, 26 minutes, valid,
-  dated public activity for 9 companies. Limit per 100-company shard: 2,000 requests / 45 minutes / USD 10.
-- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r11c-smoke`, no keys).
+- Measured (smoke-100 `r12-smoke`, refreshed from `r11c-smoke`, no keys, 12-core laptop): 100/100 envelopes, validation passed,
+  1,728 requests (1,719 in `r11c-smoke` + 9 targeted retry requests), 0 module errors, 0 failed claims, 0 uncited claims, 0 rejected
+  external observations (132 accepted), 13 verified websites (`916361750` recovered after earlier 429), man-years for 72 companies
+  (`922199477` recovered after earlier `IncompleteRead`), dated public activity (TED/SkatteFUNN/GLEIF/DiBK) for 8 companies.
+  A second set of 100 other companies (`r11`, no keys): 1,744 requests, 26 minutes, valid, dated public activity for 9 companies.
+  Limit per 100-company shard: 2,000 requests / 45 minutes / USD 10.
+- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r12-smoke`, no keys).
 
 ### Optional keys (all off by default; with no key: no request, no cost, identical output)
 If Builderr supplies a key for scoring, these steps switch on with no code change; each declares its cost per company in

@@ -27,6 +27,8 @@ STRATEGIES = (
     "exact_entity_article_capture",
     "independent_sentiment",
     "buzz_peer_normalization",
+    "official_public_activity",
+    "registry_declared_website",
 )
 
 
