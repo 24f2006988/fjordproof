@@ -207,12 +207,13 @@ e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresult
 - OCR uses half the CPU cores as workers (`--ocr-workers`), each with its own 2-thread engine; annual-account copies download during the
   website stage. A built-in budget guard stops new work before 40 minutes and 1,900 requests per 100 companies (official limit 2,000)
   and still emits every envelope.
-- Measured (smoke-100 `r13-smoke`, run on 13 November 2026 through the starter-kit command `scripts/run_competition_batch.py`, no keys,
-  12-core laptop): 100/100 envelopes, validation passed, 1,746 requests, 26 minutes, 0 failed claims, 0 uncited claims,
-  13 verified websites, man-years for 72 companies, dated public activity (TED/SkatteFUNN/GLEIF/DiBK) for 8 companies.
+- Measured (smoke-100 `r14-smoke`, run on 13 November 2026 through the starter-kit command `scripts/run_competition_batch.py`, no keys,
+  12-core laptop): 100/100 envelopes, validation passed, 1,724 requests, 19 minutes, 0 failed claims, 0 uncited claims,
+  13 verified websites, man-years for 72 companies, dated Entity Register changes for 100 companies (914 items, change feed),
+  dated public activity from TED/SkatteFUNN/GLEIF/DiBK for 8 companies.
   A second set of 100 other companies (`r11`, no keys): 1,744 requests, 26 minutes, valid, dated public activity for 9 companies.
   Limit per 100-company shard: 2,000 requests / 45 minutes / USD 10.
-- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r13-smoke`, no keys); the same viewer page is `docs/index.html`, served at https://24f2006988.github.io/fjordproof/.
+- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r14-smoke`, no keys); the same viewer page is `docs/index.html`, served at https://24f2006988.github.io/fjordproof/.
 
 ### Optional keys (all off by default; with no key: no request, no cost, identical output)
 If Builderr supplies a key for scoring, these steps switch on with no code change; each declares its cost per company in
