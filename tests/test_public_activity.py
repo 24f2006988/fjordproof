@@ -47,10 +47,11 @@ GLEIF = {"data": [_lei("894500NF5J8BRCI2K308", ORG),
                   _lei("5493000000000000PT01", ORG, jurisdiction="PT", ra="RA000513")]}  # same 9 digits, Portuguese register
 
 
-def _loaded(ted=TED, skf=SKF, gleif=GLEIF):
+def _loaded(ted=TED, skf=SKF, gleif=GLEIF, updates=None):
     p = pa.PublicActivity()
     p._post = lambda url, body: json.dumps(ted).encode()
-    p._get = lambda url: json.dumps(gleif).encode() if url.startswith(pa.GLEIF_SEARCH) else skf
+    p._get = lambda url: (json.dumps(gleif).encode() if url.startswith(pa.GLEIF_SEARCH)
+                          else json.dumps(updates or {}).encode() if url.startswith(pa.BRREG_UPDATES) else skf)
     p.load([ORG, "999999999"])
     return p
 

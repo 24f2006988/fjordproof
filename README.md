@@ -167,6 +167,10 @@ Adds to the starter (every external fact needs exact-entity proof; anything unpr
    companies only (NACE 41-43, 71; one page each, a 404 = no approval). Each item has its own date (TED publication date / SkatteFUNN
    decision date / LEI initial registration date / approval period start), title, direct URL and the literal source text.
    Off: `SIGNALPOST_PUBLIC_ACTIVITY=off`.
+   Also in this family: dated changes of the company's own Entity Register record from Brreg's change feed
+   (`/enhetsregisteret/api/oppdateringer/enheter?organisasjonsnummer=...&includeChanges=true`, NLOD 2.0; one request per 100 companies, the
+   ten newest entries per company since 2018). Each item is one feed entry (its update id, date and change type); the title only restates
+   which register fields the entry changed (for example "latest filed annual accounts (2025)", "business address"). Off: `SIGNALPOST_REGISTRY_UPDATES=off`.
 
 ### Output format
 Each envelope keeps the starter's native fields (`state`, `modules`, `profile`) and also carries the `OUTPUT_CONTRACT.md` fields
@@ -188,7 +192,7 @@ e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresult
 ### Submission facts
 - Run command: `uv sync && uv run python scripts/run_signalpost.py --organisations <batch.jsonl> --run-id <id> --expected-count <n> --outdir out`
 - Without keys (the default): no model, no paid API, USD 0. Sources: Brønnøysundregistrene open data (NLOD 2.0: Enhetsregisteret, roles,
-  Regnskapsregisteret, annual-account copies), NAV's public job feed, company-owned websites (robots.txt respected, public-URL guard),
+  Regnskapsregisteret, annual-account copies, the Entity Register change feed), NAV's public job feed, company-owned websites (robots.txt respected, public-URL guard),
   EU TED notices (api.ted.europa.eu, free public API; EU open-data reuse, Commission Decision 2011/833/EU) and the Research Council of Norway's
   published SkatteFUNN project list (forskningsradet.no; public-sector information, reuse assumed under NLOD 2.0); GLEIF LEI data
   (api.gleif.org, free public API, CC0 1.0); DiBK sentral godkjenning enterprise pages (sgregister.dibk.no, public register of the

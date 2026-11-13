@@ -18,6 +18,7 @@ ACTIVITY_SOURCES = {
     "public_contract_award": ("news", "winner_organisation_number_in_ted_notice", "official_api", "ted"),
     "rd_tax_credit_project": ("news", "organisation_number_in_skattefunn_list", "permitted_public_page", "skattefunn"),
     "lei_registration": ("company_directory", "registered_as_organisation_number_at_brreg_in_lei_record", "official_api", "gleif"),
+    "registry_update": ("brreg", "organisation_number_in_brreg_change_feed", "official_api", "brreg"),
     "central_approval": ("company_directory", "organisation_number_on_dibk_enterprise_page", "permitted_public_page", "dibk"),
 }
 

@@ -105,7 +105,7 @@ def main() -> None:
             batch_orgs = []
         threading.Thread(target=activity.load, args=(batch_orgs,), daemon=True).start()
     else:
-        activity.errors = {s: "switched off" for s in ("ted", "skattefunn", "gleif", "dibk")}
+        activity.errors = {s: "switched off" for s in ("ted", "skattefunn", "gleif", "dibk", "brreg_updates")}
         activity.ready.set()
     rc = subprocess.run(cmd, stdout=subprocess.DEVNULL).returncode
     if rc != 0:

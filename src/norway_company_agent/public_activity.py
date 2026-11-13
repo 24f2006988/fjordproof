@@ -18,6 +18,7 @@ import hashlib
 import html
 import io
 import json
+import os
 import re
 import threading
 import urllib.error
@@ -46,7 +47,10 @@ DIBK_PAGE = "https://sgregister.dibk.no/enterprises/{org}"
 DIBK_NACE = ("41", "42", "43", "71")  # building, civil engineering, specialised construction, architecture/engineering
 DIBK_WORKERS = 4
 MAX_ITEMS_PER_SOURCE = 10
-SOURCES = ("ted", "skattefunn", "gleif", "dibk")
+BRREG_UPDATES = "https://data.brreg.no/enhetsregisteret/api/oppdateringer/enheter"
+BRREG_UPDATES_SINCE = "2018-01-01T00:00:00.000Z"
+BRREG_UPDATES_BATCH = 100
+SOURCES = ("ted", "skattefunn", "gleif", "dibk", "brreg_updates")
 _NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 
@@ -115,6 +119,7 @@ class PublicActivity:
         self.skattefunn: dict[str, list[dict[str, Any]]] = {}
         self.gleif: dict[str, list[dict[str, Any]]] = {}
         self.dibk: dict[str, list[dict[str, Any]]] = {}
+        self.brreg_updates: dict[str, list[dict[str, Any]]] = {}
         self.dibk_checked: set[str] = set()
         self._lock = threading.Lock()
         self.ready = threading.Event()
@@ -133,6 +138,13 @@ class PublicActivity:
             return resp.read()
 
     def load(self, orgs: list[str]) -> None:
+        if os.environ.get("SIGNALPOST_REGISTRY_UPDATES", "").casefold() == "off":
+            self.errors["brreg_updates"] = "switched off"
+        else:
+            try:
+                self._load_brreg_updates([o for o in dict.fromkeys(_digits(o) for o in orgs) if len(o) == 9])
+            except Exception as exc:  # noqa: BLE001  one source failing never stops the run
+                self.errors["brreg_updates"] = type(exc).__name__
         try:
             self._load_ted([o for o in dict.fromkeys(_digits(o) for o in orgs) if len(o) == 9])
         except Exception as exc:  # noqa: BLE001  one source failing never stops the run
@@ -231,6 +243,28 @@ class PublicActivity:
                 })
         self.sha256["gleif"] = hashlib.sha256("".join(hashes).encode()).hexdigest()
 
+    def _load_brreg_updates(self, orgs: list[str]) -> None:
+        """Dated changes of each company's own Entity Register record (Brreg change feed, keyed by organisation number)."""
+        self.retrieved_at["brreg_updates"] = utc_now()
+        hashes = []
+        for i in range(0, len(orgs), BRREG_UPDATES_BATCH):
+            chunk = orgs[i:i + BRREG_UPDATES_BATCH]
+            wanted = set(chunk)
+            page, pages = 0, 1
+            while page < pages and page < 5:
+                query = urllib.parse.urlencode({"organisasjonsnummer": ",".join(chunk), "dato": BRREG_UPDATES_SINCE, "includeChanges": "true",
+                                                "size": 10000, "page": page}, safe=",:")
+                raw = self._get(f"{BRREG_UPDATES}?{query}")
+                hashes.append(hashlib.sha256(raw).hexdigest())
+                body = json.loads(raw)
+                pages = int((body.get("page") or {}).get("totalPages") or 1)
+                page += 1
+                for event in (body.get("_embedded") or {}).get("oppdaterteEnheter") or []:
+                    item = registry_update_item(event)
+                    if item and item["organisation_number"] in wanted:
+                        self.brreg_updates.setdefault(item.pop("organisation_number"), []).append(item)
+        self.sha256["brreg_updates"] = hashlib.sha256("".join(hashes).encode()).hexdigest()
+
     def load_dibk(self, profiles: list[dict[str, Any]], may_continue: Any = lambda: True) -> None:
         """One enterprise page per construction/architecture company; a 404 means no approval is registered."""
         wanted = [o for o in dict.fromkeys(_digits(p.get("organisation_number")) for p in profiles
@@ -295,11 +329,69 @@ def parse_dibk(page: str, org: str, url: str) -> list[dict[str, Any]]:
                       f"Godkjenningsperiode {start} - {end}; {areas[0]}")[:240]}]
 
 
+# Entity Register fields (first path segment of a change) in plain English. Unknown fields are named as the register names them.
+BRREG_FIELD_LABELS = {
+    "navn": "name", "organisasjonsform": "legal form", "forretningsadresse": "business address", "postadresse": "postal address",
+    "naeringskode1": "main industry code", "naeringskode2": "second industry code", "naeringskode3": "third industry code",
+    "hjelpeenhetskode": "auxiliary-unit code", "antallAnsatte": "registered employee count", "harRegistrertAntallAnsatte": "employee-count flag",
+    "hjemmeside": "website", "epostadresse": "e-mail address", "telefon": "phone number", "mobil": "mobile number",
+    "sisteInnsendteAarsregnskap": "latest filed annual accounts", "erIKonsern": "group membership", "kapital": "share capital",
+    "vedtektsdato": "date of articles of association", "vedtektsfestetFormaal": "statutory purpose", "aktivitet": "registered activity",
+    "institusjonellSektorkode": "institutional sector", "registrertIMvaregisteret": "VAT registration",
+    "registrertIForetaksregisteret": "Register of Business Enterprises registration", "registrertIStiftelsesregisteret": "foundation register registration",
+    "registrertIFrivillighetsregisteret": "voluntary-organisation register registration", "frivilligMvaRegistrertBeskrivelser": "voluntary VAT registration",
+    "konkurs": "bankruptcy status", "konkursdato": "bankruptcy date", "underAvvikling": "liquidation status", "underAvviklingDato": "liquidation date",
+    "underTvangsavviklingEllerTvangsopplosning": "forced-dissolution status", "tvangsavvikletPgaManglendeSlettingDato": "forced-dissolution date",
+    "maalform": "written standard", "stiftelsesdato": "date of incorporation", "fravalgRevisjonDato": "audit opt-out date",
+    "fravalgRevisjonBeslutningsDato": "audit opt-out decision date", "overordnetEnhet": "parent unit",
+    "registreringsdatoMerverdiavgiftsregisteret": "VAT registration date", "registreringsdatoForetaksregisteret": "business-register registration date",
+    "registreringsdatoAntallAnsatteEnhetsregisteret": "employee-count registration date",
+    "registreringsdatoAntallAnsatteNAVAaregisteret": "employee-count date (Aa register)", "paategninger": "register annotations",
+}
+BRREG_EVENT_TITLES = {"Ny": "Registered in the Entity Register", "Sletting": "Deleted from the Entity Register",
+                      "Fjernet": "Removed from the Entity Register"}
+
+
+def registry_update_item(event: dict[str, Any]) -> dict[str, Any] | None:
+    """One dated item from one change-feed entry. Titles only restate what the entry itself says (type, changed fields, simple new values)."""
+    org, when, uid = _digits(event.get("organisasjonsnummer")), str(event.get("dato") or ""), event.get("oppdateringsid")
+    kind = str(event.get("endringstype") or "")
+    if len(org) != 9 or not re.match(r"\d{4}-\d{2}-\d{2}T", when) or uid is None:
+        return None
+    fields: list[str] = []
+    simple: dict[str, str] = {}
+    paths: list[str] = []
+    for change in event.get("endringer") or []:
+        path = str(change.get("path") or "")
+        head = path.strip("/").split("/")[0]
+        if not head:
+            continue
+        paths.append(f"{change.get('op')} {path}")
+        label = BRREG_FIELD_LABELS.get(head, head)
+        if label not in fields:
+            fields.append(label)
+        value = change.get("value")
+        if path.count("/") == 1 and change.get("op") in {"add", "replace"} and isinstance(value, (str, int)) and not isinstance(value, bool):
+            simple[label] = str(value)
+    if kind in BRREG_EVENT_TITLES:
+        title = BRREG_EVENT_TITLES[kind]
+    elif fields:
+        shown = [f"{f} ({simple[f]})" if f in simple and len(simple[f]) <= 60 else f for f in fields[:6]]
+        title = "Entity Register record changed: " + ", ".join(shown) + (f" and {len(fields) - 6} more" if len(fields) > 6 else "")
+    else:
+        title = "Entity Register record updated"
+    return {"organisation_number": org, "source": "Brreg Entity Register change feed", "kind": "registry_update", "update_id": uid,
+            "change_type": kind, "changed_fields": fields, "title": title[:240], "date": when[:10], "row": str(uid),
+            "url": f"{BRREG_UPDATES}?organisasjonsnummer={org}&dato={BRREG_UPDATES_SINCE}&includeChanges=true",
+            "span": (f"oppdateringsid {uid}: organisasjonsnummer {org}, endringstype {kind}, dato {when}"
+                     + (f"; endringer: {'; '.join(paths)}" if paths else ""))[:240]}
+
+
 def fetch_activity(profile: dict[str, Any], pa: PublicActivity) -> dict[str, Any]:
     """Evidence record 'public_activity' for one company: dated items whose source row names this organisation number."""
     org = _digits(profile.get("organisation_number"))
     items: list[dict[str, Any]] = []
-    for source, table in (("ted", pa.ted), ("skattefunn", pa.skattefunn), ("gleif", pa.gleif), ("dibk", pa.dibk)):
+    for source, table in (("ted", pa.ted), ("skattefunn", pa.skattefunn), ("gleif", pa.gleif), ("dibk", pa.dibk), ("brreg_updates", pa.brreg_updates)):
         if source in pa.errors:
             continue
         for item in sorted(table.get(org, []), key=lambda i: i["date"], reverse=True)[:MAX_ITEMS_PER_SOURCE]:
@@ -309,7 +401,7 @@ def fetch_activity(profile: dict[str, Any], pa: PublicActivity) -> dict[str, Any
     checked = [s for s in SOURCES if s not in pa.errors and (s != "dibk" or org in pa.dibk_checked)]
     if items:
         return evidence("public_activity", "available", "official_public_activity", items[0]["url"], value={"items": items, "sources": checked},
-                        retrieved_at=utc_now(), note="Dated items from TED / SkatteFUNN / GLEIF / DiBK whose own record names this organisation number")
+                        retrieved_at=utc_now(), note="Dated items from TED / SkatteFUNN / GLEIF / DiBK / the Brreg change feed whose own record names this organisation number")
     if not checked:
         return evidence("public_activity", "source_error", "official_public_activity", TED_SEARCH,
                         note=f"TED, SkatteFUNN and GLEIF unavailable: {pa.errors}")
