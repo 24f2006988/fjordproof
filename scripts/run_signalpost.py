@@ -2,7 +2,7 @@
 """One command: starter pipeline + free website discovery + verified-site footprint.
 
 python scripts/run_signalpost.py --organisations batch.jsonl --bulk brreg-enheter.csv --run-id r1 --expected-count 100
-Extra flags are passed through to run_competition_batch.py. Prior snapshot: --previous out/envelopes.jsonl
+The registry base step is scripts/run_base_batch.py; scripts/run_competition_batch.py (starter-kit command) runs this same script. Prior snapshot: --previous out/envelopes.jsonl
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from norway_company_agent.batch import terminal_envelope, validate_envelopes  # noqa: E402
+from norway_company_agent.batch import read_organisation_inputs, terminal_envelope, validate_envelopes  # noqa: E402
 from norway_company_agent.budget import BudgetGuard  # noqa: E402
 from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
@@ -66,6 +66,9 @@ def main() -> None:
     p.add_argument("--run-id", required=True)
     p.add_argument("--expected-count", type=int, required=True)
     p.add_argument("--outdir", default="out")
+    p.add_argument("--output", default=None, help="envelope JSONL path (default: <outdir>/envelopes.jsonl)")
+    p.add_argument("--profiles-output", default=None, help="profiles JSONL path (default: <outdir>/profiles.jsonl)")
+    p.add_argument("--report", default=None, help="run report path (default: <outdir>/run-report.json)")
     p.add_argument("--previous", help="previous envelopes JSONL (snapshot is preserved; changes are reported)")
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--plus-workers", type=int, default=24, help="threads for website discovery/footprint (many different hosts; Brreg is not hit here)")
@@ -77,12 +80,14 @@ def main() -> None:
     p.add_argument("--ocr-workers", type=int, default=max(1, min(6, (os.cpu_count() or 2) // 2)), help="threads reading man-years from filed annual-account copies")
     a = p.parse_args()
     out = Path(a.outdir)
-    profiles_path, env_path, report_path = out / "profiles.jsonl", out / "envelopes.jsonl", out / "run-report.json"
+    env_path = Path(a.output) if a.output else out / "envelopes.jsonl"
+    profiles_path = Path(a.profiles_output) if a.profiles_output else out / "profiles.jsonl"
+    report_path = Path(a.report) if a.report else out / "run-report.json"
     base_modules = ",".join(m for m in MODULES.split(",") if m not in PLUS_MODULES)  # website discovery also runs in this script
     # Official limit: 2,000 requests per 100 companies. Keep 100 in reserve; the man-year step stops a further 100 earlier.
     max_reqs = a.max_requests if a.max_requests is not None else max(1900, int(a.expected_count * 19))
     budget = BudgetGuard(max_runtime_seconds=a.max_runtime_seconds, max_requests=max_reqs)
-    cmd = [sys.executable, str(ROOT / "scripts" / "run_competition_batch.py"), "--organisations", a.organisations,
+    cmd = [sys.executable, str(ROOT / "scripts" / "run_base_batch.py"), "--organisations", a.organisations,
            "--profiles-output", str(profiles_path), "--output", str(env_path), "--report", str(report_path),
            "--run-id", a.run_id, "--expected-count", str(a.expected_count), "--workers", str(a.workers), "--modules", base_modules,
            "--max-runtime-seconds", str(budget.remaining_seconds), "--max-requests", str(max_reqs)] + (["--bulk", a.bulk] if a.bulk else [])
@@ -94,12 +99,10 @@ def main() -> None:
     # pipeline runs. DiBK approval pages need the industry code, so they are read after it.
     activity = PublicActivity()
     if os.environ.get("SIGNALPOST_PUBLIC_ACTIVITY", "").casefold() != "off":
-        batch_orgs = []
-        for line in Path(a.organisations).read_text(encoding="utf-8").splitlines():
-            try:
-                batch_orgs.append(str((json.loads(line) or {}).get("organisation_number") or ""))
-            except (ValueError, AttributeError):
-                batch_orgs.append(line.strip())
+        try:  # same reader as the registry step: JSON list, JSONL objects or plain numbers
+            batch_orgs = [item["organisation_number"] for item in read_organisation_inputs(a.organisations)]
+        except (ValueError, OSError):
+            batch_orgs = []
         threading.Thread(target=activity.load, args=(batch_orgs,), daemon=True).start()
     else:
         activity.errors = {s: "switched off" for s in ("ted", "skattefunn", "gleif", "dibk")}

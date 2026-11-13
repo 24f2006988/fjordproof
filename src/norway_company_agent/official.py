@@ -223,6 +223,54 @@ def _classified(field: str, source_type: str, result: FetchResult, value: Any = 
     return evidence(field, "source_error", source_type, result.url, note=result.error, content_sha256=result.content_sha256, retrieved_at=result.retrieved_at, effective_at=result.effective_at)
 
 
+def normalize_group(body: Any, org: str) -> Any:
+    """Group relation of THIS company. Brreg's konsernstruktur answers with the whole tree of the group's top parent,
+    so for a subsidiary the raw record starts with another company's name and number and lists its sister companies.
+    The published value always starts with the company itself and keeps only its own parent and its own subsidiaries."""
+    if not isinstance(body, dict) or not body.get("organisasjonsnummer"):
+        return body
+    nodes: list[dict[str, Any]] = []
+
+    def walk(node: dict[str, Any], parent: dict[str, Any] | None) -> None:
+        flat = {k: v for k, v in node.items() if k != "children"}
+        if parent is not None:
+            flat.setdefault("parentOrganisasjonsnummer", parent.get("organisasjonsnummer"))
+            flat.setdefault("parentNavn", parent.get("navn"))
+        nodes.append(flat)
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                walk(child, node)
+
+    walk(body, None)
+    by_org = {str(n.get("organisasjonsnummer")): n for n in nodes}
+    root = nodes[0]
+    me = by_org.get(str(org))
+    if me is None:  # the tree does not list this company itself: say only which group answered for it
+        return {"organisasjonsnummer": str(org), "navn": None, "organisasjonsform": None, "position": "member", "children": [],
+                "group_root": {"organisasjonsnummer": root.get("organisasjonsnummer"), "navn": root.get("navn")}}
+
+    def descendants(parent_org: str, seen: set[str]) -> list[dict[str, Any]]:
+        out = []
+        for n in nodes:
+            o = str(n.get("organisasjonsnummer"))
+            if str(n.get("parentOrganisasjonsnummer")) == parent_org and o not in seen and o != str(org):
+                seen.add(o)
+                out.append(n)
+                out.extend(descendants(o, seen))
+        return out
+
+    value: dict[str, Any] = {"organisasjonsnummer": str(org), "navn": me.get("navn"), "organisasjonsform": me.get("organisasjonsform"),
+                             "position": "group_parent" if me is root else "subsidiary",
+                             "children": descendants(str(org), set())}
+    if me is not root:
+        parent = by_org.get(str(me.get("parentOrganisasjonsnummer"))) or {}
+        value["parent"] = {"organisasjonsnummer": me.get("parentOrganisasjonsnummer"), "navn": me.get("parentNavn") or parent.get("navn"),
+                           "organisasjonsform": parent.get("organisasjonsform"), "knytningsform": me.get("knytningsform"),
+                           "grunnlag": me.get("grunnlag"), "dato": me.get("dato")}
+        value["group_root"] = {"organisasjonsnummer": root.get("organisasjonsnummer"), "navn": root.get("navn")}
+    return value
+
+
 def fetch_official_modules(org: str, modules: set[str], fetcher: Callable[[str], FetchResult] = fetch_json) -> tuple[dict[str, Any], list[FetchResult]]:
     records: dict[str, Any] = {}
     metrics: list[FetchResult] = []
@@ -241,6 +289,6 @@ def fetch_official_modules(org: str, modules: set[str], fetcher: Callable[[str],
         metrics.append(result)
         normalized = None
         if result.status == 200:
-            normalized = normalize_entity(result.body) if module == "registry_live" else normalize_financials(result.body) if module == "financials" else normalize_financial_history(result.body, org) if module == "financial_history" else normalize_roles(result.body) if module == "roles" else normalize_locations(result.body) if module == "locations" else result.body
+            normalized = normalize_entity(result.body) if module == "registry_live" else normalize_financials(result.body) if module == "financials" else normalize_financial_history(result.body, org) if module == "financial_history" else normalize_roles(result.body) if module == "roles" else normalize_locations(result.body) if module == "locations" else normalize_group(result.body, org) if module == "group" else result.body
         records[module] = _classified(module, source_type, result, value=normalized)
     return records, metrics

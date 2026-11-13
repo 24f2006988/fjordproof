@@ -2,6 +2,18 @@
 
 Exact-entity, evidence-backed Norwegian company profiles, built on the Builderr starter kit (see "Signalpost extension" and "Submission facts" below).
 
+**Run command.** Either command runs the full agent and writes the same envelopes (registry facts, verified websites and contacts,
+dated news, job postings, dated public activity, man-years, atomic claims, cited synthesis):
+
+    uv sync && uv run python scripts/run_signalpost.py --organisations batch.jsonl --run-id r1 --expected-count 100 --outdir out
+    uv sync && uv run python scripts/run_competition_batch.py --organisations batch.jsonl --profiles-output out/profiles.jsonl --output out/envelopes.jsonl --report out/run-report.json --run-id r1 --expected-count 100
+
+The second is the starter kit's evaluator command; in this repository it is the same full agent (the registry-only step it used to be
+is `scripts/run_base_batch.py`).
+
+**Live viewer** (find a company, compare up to four, open the source of every fact; laptop and phone):
+https://24f2006988.github.io/fjordproof/ (the committed 100-company smoke run; the same page every run writes to `out/site/index.html`).
+
 ---
 
 # Original starter README: Signalpost reference agent
@@ -61,6 +73,7 @@ uv run python select_entry_batch.py \
 # Use the 100-company batch as your smoke test.
 cp entry-companies.jsonl smoke-companies.jsonl
 
+# In this entry run_competition_batch.py runs the full FjordProof agent (see the top of this README).
 uv run python scripts/run_competition_batch.py \
   --organisations smoke-companies.jsonl \
   --bulk brreg-enheter.csv \
@@ -125,6 +138,7 @@ Email the repository URL, run command, models/APIs and expected cost per 100-com
 One command (Python 3.12; `uv sync` installs the pinned dependencies; no API key needed, USD 0 without keys):
 
     uv sync && uv run python scripts/run_signalpost.py --organisations batch.jsonl --run-id r1 --expected-count 100 --outdir out
+    # the starter-kit command scripts/run_competition_batch.py (--output/--profiles-output/--report) runs this same agent
     # optional: --bulk brreg-enheter.csv (otherwise each company is looked up live, ~1 extra request each)
     # refresh: add --previous out/envelopes.jsonl  (prior snapshot kept; material changes appear in envelope["changes"])
 
@@ -189,13 +203,12 @@ e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresult
 - OCR uses half the CPU cores as workers (`--ocr-workers`), each with its own 2-thread engine; annual-account copies download during the
   website stage. A built-in budget guard stops new work before 40 minutes and 1,900 requests per 100 companies (official limit 2,000)
   and still emits every envelope.
-- Measured (smoke-100 `r12-smoke`, refreshed from `r11c-smoke`, no keys, 12-core laptop): 100/100 envelopes, validation passed,
-  1,728 requests (1,719 in `r11c-smoke` + 9 targeted retry requests), 0 module errors, 0 failed claims, 0 uncited claims, 0 rejected
-  external observations (132 accepted), 13 verified websites (`916361750` recovered after earlier 429), man-years for 72 companies
-  (`922199477` recovered after earlier `IncompleteRead`), dated public activity (TED/SkatteFUNN/GLEIF/DiBK) for 8 companies.
+- Measured (smoke-100 `r13-smoke`, run on 13 November 2026 through the starter-kit command `scripts/run_competition_batch.py`, no keys,
+  12-core laptop): 100/100 envelopes, validation passed, 1,746 requests, 26 minutes, 0 failed claims, 0 uncited claims,
+  13 verified websites, man-years for 72 companies, dated public activity (TED/SkatteFUNN/GLEIF/DiBK) for 8 companies.
   A second set of 100 other companies (`r11`, no keys): 1,744 requests, 26 minutes, valid, dated public activity for 9 companies.
   Limit per 100-company shard: 2,000 requests / 45 minutes / USD 10.
-- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r12-smoke`, no keys).
+- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r13-smoke`, no keys); the same viewer page is `docs/index.html`, served at https://24f2006988.github.io/fjordproof/.
 
 ### Optional keys (all off by default; with no key: no request, no cost, identical output)
 If Builderr supplies a key for scoring, these steps switch on with no code change; each declares its cost per company in

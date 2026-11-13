@@ -1,7 +1,7 @@
 {
-  "run_id": "r12-smoke",
-  "started_at": "2026-10-23T12:35:14.720761Z",
-  "completed_at": "2026-11-13T12:56:34.339481Z",
+  "run_id": "r13-smoke",
+  "started_at": "2026-11-13T14:03:18.816817Z",
+  "completed_at": "2026-11-13T14:29:20.368365Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "resumed_profiles": 0,
@@ -30,10 +30,10 @@
     "bulk_note": "bulk snapshot not supplied"
   },
   "operations": {
-    "requests": 1728,
-    "bytes": 2454952,
-    "p50_ms": 1342,
-    "p95_ms": 3437,
+    "requests": 1746,
+    "bytes": 2439855,
+    "p50_ms": 1250,
+    "p95_ms": 2625,
     "third_party_cost_usd": 0.0,
     "budget_exhausted": false
   },
@@ -49,8 +49,8 @@
     "invalid_states": []
   },
   "job_feed": {
-    "active_ads": 9760,
-    "requests": 155,
+    "active_ads": 9592,
+    "requests": 150,
     "error": null,
     "days": 60
   },
@@ -59,6 +59,6 @@
     "errors": {},
     "companies": 8
   },
-  "discovery_retries": 36,
-  "footprint_retries": 0
+  "discovery_retries": 25,
+  "footprint_retries": 1
 }

@@ -378,7 +378,7 @@ function groupPanel(d){
   const v = val(d,"group_structure"); const box = el("div", {class:"panel"}, el("h2", {text:"Group structure"}));
   if (!v){ box.append(el("p", {class:"empty", text:NOT_FOUND_WHY.group_structure}), refs(d, claim(d,"group_structure")?.e)); return box; }
   const kids = v.children || [];
-  box.append(el("p", {text:"Group root: " + v.navn + " (" + v.organisasjonsnummer + ")."}), kids.length ? el("ul", {class:"plain"}, kids.slice(0,40).map(k => el("li", {text:k.navn + " (" + k.organisasjonsnummer + ") – " + (k.knytningsform?.beskrivelse || "member") + (k.grunnlag ? ", " + k.grunnlag : "") + (k.dato ? ", since " + k.dato : "")}))) : null, refs(d, claim(d,"group_structure")?.e));
+  box.append(el("p", {text: v.parent && v.parent.organisasjonsnummer ? "Subsidiary of " + v.parent.navn + " (" + v.parent.organisasjonsnummer + ")" + (v.parent.grunnlag ? ", " + v.parent.grunnlag : "") + (v.parent.dato ? ", since " + v.parent.dato : "") + "." + (kids.length ? " Its own subsidiaries:" : "") : "Parent company of this group. Subsidiaries:"}), kids.length ? el("ul", {class:"plain"}, kids.slice(0,40).map(k => el("li", {text:k.navn + " (" + k.organisasjonsnummer + ") – " + (k.knytningsform?.beskrivelse || "member") + (k.grunnlag ? ", " + k.grunnlag : "") + (k.dato ? ", since " + k.dato : "")}))) : null, refs(d, claim(d,"group_structure")?.e));
   return box;
 }
 function activityPanel(d){

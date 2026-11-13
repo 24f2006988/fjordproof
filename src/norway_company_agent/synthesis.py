@@ -272,9 +272,18 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
     group = val("group_structure")
     if group:
         kids = group.get("children") or []
-        is_root = group.get("organisasjonsnummer") == org
-        say("group", (f"Parent of a group with {len(kids)} registered subsidiar{'ies' if len(kids) != 1 else 'y'}." if is_root
-                      else f"Part of the group led by {group.get('navn')} ({group.get('organisasjonsnummer')})."), "group_structure")
+        parent = group.get("parent") or {}
+        if parent.get("organisasjonsnummer"):
+            share = f", {str(parent['grunnlag']).replace(' ', '')}" if parent.get("grunnlag") else ""
+            text = f"Subsidiary of {parent.get('navn')} ({parent.get('organisasjonsnummer')}{share})."
+            if kids:
+                text += f" It has {len(kids)} registered subsidiar{'ies' if len(kids) != 1 else 'y'} of its own."
+        elif group.get("position") == "member":
+            top = group.get("group_root") or {}
+            text = f"Member of the group led by {top.get('navn')} ({top.get('organisasjonsnummer')})."
+        else:
+            text = f"Parent of a group with {len(kids)} registered subsidiar{'ies' if len(kids) != 1 else 'y'}."
+        say("group", text, "group_structure")
 
     # Online presence and dated activity (verified company-owned site only)
     site = val("official_website")
@@ -497,6 +506,7 @@ def build_synthesis(envelope: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "headline": headline,
+        "summary": conclusion,
         "conclusion": conclusion,
         "sections": sections,
         "statements": statements,
