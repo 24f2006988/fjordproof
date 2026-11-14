@@ -7,6 +7,7 @@ The registry base step is scripts/run_base_batch.py; scripts/run_competition_bat
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import json
 import os
@@ -59,6 +60,16 @@ def contract_or_keep(envelope: dict) -> None:
         envelope.setdefault("errors", []).append({"module": "contract", "error": type(exc).__name__, "note": str(exc)[:160]})
 
 
+@contextlib.contextmanager
+def guarded(stage: str):
+    """One stage's unexpected error must never cost the whole batch its results: the error is reported, the rest of that
+    stage is skipped and the run goes on to write everything found."""
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001
+        print(f"stage '{stage}' stopped early: {type(exc).__name__}: {str(exc)[:160]}", file=sys.stderr)
+
+
 def material_changes(old: dict | None, new: dict) -> list[dict]:
     if not old:
         return []
@@ -95,6 +106,13 @@ def main() -> None:
     # one shared engine, 4 workers: 83-163 s; 4 x 3: 198 s), same values in every case.
     p.add_argument("--ocr-workers", type=int, default=max(1, min(6, (os.cpu_count() or 2) // 2)), help="threads reading man-years from filed annual-account copies")
     a = p.parse_args()
+    try:  # a wrong --expected-count would stop the registry step before anything is written: use the real size of the batch
+        actual_count = len(read_organisation_inputs(a.organisations))
+    except Exception:  # noqa: BLE001  the registry step reports an unreadable batch file
+        actual_count = 0
+    if actual_count and actual_count != a.expected_count:
+        print(f"--expected-count {a.expected_count} does not match the batch file ({actual_count} companies); using {actual_count}", file=sys.stderr)
+        a.expected_count = actual_count
     out = Path(a.outdir)
     env_path = Path(a.output) if a.output else out / "envelopes.jsonl"
     profiles_path = Path(a.profiles_output) if a.profiles_output else out / "profiles.jsonl"
@@ -124,15 +142,55 @@ def main() -> None:
     else:
         activity.errors = {s: "switched off" for s in ("ted", "skattefunn", "gleif", "dibk", "brreg_updates")}
         activity.ready.set()
+    run_started = utc_now()
+    for stale in (profiles_path, report_path):  # never continue from another run's files
+        with contextlib.suppress(OSError):
+            stale.unlink()
     rc = subprocess.run(cmd, stdout=subprocess.DEVNULL).returncode
-    if rc != 0:
+    try:
+        profiles = [json.loads(l) for l in profiles_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except (OSError, ValueError):
+        profiles = []
+    if not profiles:
         raise SystemExit(f"base pipeline failed ({rc})")
-    profiles = [json.loads(l) for l in profiles_path.read_text(encoding="utf-8").splitlines() if l.strip()]
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    budget.record_requests(report.get("operations", {}).get("requests", 0))
+    if rc != 0:  # the registry step wrote its profiles but reported a problem: the remaining stages still run
+        print(f"registry step ended with code {rc}; continuing with its {len(profiles)} profiles", file=sys.stderr)
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        report = {}
+    report.setdefault("started_at", run_started)
+    report.setdefault("operations", {}).setdefault("requests", 0)
+    budget.record_requests(report["operations"]["requests"])
+    base_envelopes: dict[str, dict] = {}  # the registry step's own envelope per company: last-resort fallback at the final write
+    with guarded("reading registry-step envelopes"):
+        base_envelopes = {e["organisation_number"]: e for e in map(json.loads, env_path.read_text(encoding="utf-8").splitlines())}
     previous = {}
     if a.previous and Path(a.previous).exists():
-        previous = {e["organisation_number"]: e["profile"] for e in map(json.loads, Path(a.previous).read_text(encoding="utf-8").splitlines()) if e.get("profile")}
+        with guarded("reading --previous"):
+            previous = {e["organisation_number"]: e["profile"] for e in map(json.loads, Path(a.previous).read_text(encoding="utf-8").splitlines()) if e.get("profile")}
+
+    def build_envelopes(rows: list[dict], module_names: list[str], completed_at: str, missing_status: str, missing_note: str) -> list[dict]:
+        """Final-format envelopes for these profiles. Per company: one company's unexpected data costs that company its
+        extras (its registry-step envelope stands), never the batch."""
+        built = []
+        for pr in rows:
+            try:
+                pr.setdefault("run_metrics", {})
+                for module in module_names:  # a stage not reached or stopped early leaves a stated reason, never a missing module
+                    if module not in pr["evidence"]:
+                        pr["evidence"][module] = evidence(module, missing_status, "system_budget_guard", "https://builderr.ai", note=missing_note)
+                e = terminal_envelope(pr, run_id=a.run_id, modules=module_names, started_at=report["started_at"], completed_at=completed_at)
+                e["changes"] = e["profile"].get("changes_since_previous", [])
+                contract_or_keep(e)
+            except Exception as exc:  # noqa: BLE001
+                print(f"envelope not built for {pr.get('organisation_number')}: {type(exc).__name__}: {str(exc)[:160]}", file=sys.stderr)
+                e = copy.deepcopy(base_envelopes.get(pr.get("organisation_number")))
+                if e is None:
+                    continue
+                contract_or_keep(e)
+            built.append(e)
+        return built
 
     def checkpoint(stage: str) -> None:
         """Save everything found so far to the output path, in the final format.
@@ -142,26 +200,21 @@ def main() -> None:
         the profiles); works on a copy; a failure here never affects the run.
         """
         try:
-            now = utc_now()
-            snapshot = copy.deepcopy(profiles)
-            stage_modules = MODULES.split(",")
-            for pr in snapshot:
-                pr.setdefault("run_metrics", {})
-                for module in stage_modules:
-                    if module not in pr["evidence"]:
-                        pr["evidence"][module] = evidence(module, "budget_exhausted", "system_budget_guard", "https://builderr.ai",
-                                                          note=f"Not reached yet when this checkpoint was written (after {stage})")
-            partial = [terminal_envelope(pr, run_id=a.run_id, modules=stage_modules, started_at=report["started_at"], completed_at=now)
-                       for pr in snapshot]
-            for e in partial:
-                e["changes"] = e["profile"].get("changes_since_previous", [])
-                contract_or_keep(e)
+            partial = build_envelopes(copy.deepcopy(profiles), MODULES.split(","), utc_now(), "budget_exhausted",
+                                      f"Not reached yet when this checkpoint was written (after {stage})")
             if validate_envelopes(partial, a.expected_count)["passed"]:
                 write_jsonl(env_path, partial)
         except Exception as exc:  # noqa: BLE001
             print(f"checkpoint after {stage} not written: {type(exc).__name__}: {str(exc)[:120]}", file=sys.stderr)
 
     def plus(profile: dict) -> dict:
+        try:
+            return plus_unguarded(profile)
+        except Exception as exc:  # noqa: BLE001  never drop a company, never stop the batch
+            print(f"website stage error for {profile.get('organisation_number')}: {type(exc).__name__}: {str(exc)[:120]}", file=sys.stderr)
+            return profile
+
+    def plus_unguarded(profile: dict) -> dict:
         extra = {"requests": 0, "bytes": 0}
         try:
             site = profile["evidence"].get("website", {})
@@ -280,51 +333,64 @@ def main() -> None:
             _, used = download_copy(profile["organisation_number"], year)
             budget.record_requests(used)
             profile.setdefault("run_metrics", {})["workforce_requests"] = profile["run_metrics"].get("workforce_requests", 0) + used
+    # Registry facts in the final format (atomic claims, cited summary) are on disk before any further stage starts.
+    checkpoint("registry step")
     prefetch_pool = ThreadPoolExecutor(2)
     prefetch_jobs = [prefetch_pool.submit(prefetch, pr) for pr in profiles]
 
     # NAV ads first: their employer homepages become website candidates for discovery below.
-    with ThreadPoolExecutor(8) as pool:
-        list(pool.map(jobs, profiles))
-    budget.record_requests(feed.requests)
-    report["job_feed"] = {"active_ads": len(feed.ads), "requests": feed.requests, "error": feed.error, "days": a.job_feed_days}
-    if "dibk" not in activity.errors:
-        try:
-            activity.load_dibk(profiles, may_continue=lambda: not budget.is_exhausted(safety_margin_seconds=600.0, safety_margin_requests=300))
-        except Exception as exc:  # noqa: BLE001  never drop a company
-            activity.errors["dibk"] = type(exc).__name__
-    activity.ready.wait(timeout=max(0.0, min(120.0, budget.remaining_seconds - 600.0)))
-    for pr in profiles:
-        pr["evidence"]["public_activity"] = fetch_activity(pr, activity) if activity.ready.is_set() else evidence(
-            "public_activity", "source_error", "official_public_activity", "https://api.ted.europa.eu/v3/notices/search",
-            note="TED / SkatteFUNN / GLEIF not loaded within the time budget")
-    budget.record_requests(activity.requests)
-    report["public_activity"] = {"requests": activity.requests, "errors": activity.errors,
-                                 "companies": sum(pr["evidence"]["public_activity"]["status"] == "available" for pr in profiles)}
+    with guarded("job feed"):
+        with ThreadPoolExecutor(8) as pool:
+            list(pool.map(jobs, profiles))
+        budget.record_requests(feed.requests)
+        report["job_feed"] = {"active_ads": len(feed.ads), "requests": feed.requests, "error": feed.error, "days": a.job_feed_days}
+    with guarded("public activity"):
+        if "dibk" not in activity.errors:
+            try:
+                activity.load_dibk(profiles, may_continue=lambda: not budget.is_exhausted(safety_margin_seconds=600.0, safety_margin_requests=300))
+            except Exception as exc:  # noqa: BLE001  never drop a company
+                activity.errors["dibk"] = type(exc).__name__
+        activity.ready.wait(timeout=max(0.0, min(120.0, budget.remaining_seconds - 600.0)))
+        for pr in profiles:
+            try:
+                pr["evidence"]["public_activity"] = fetch_activity(pr, activity) if activity.ready.is_set() else evidence(
+                    "public_activity", "source_error", "official_public_activity", "https://api.ted.europa.eu/v3/notices/search",
+                    note="TED / SkatteFUNN / GLEIF not loaded within the time budget")
+            except Exception as exc:  # noqa: BLE001  never drop a company
+                pr["evidence"]["public_activity"] = evidence(
+                    "public_activity", "source_error", "official_public_activity", "https://api.ted.europa.eu/v3/notices/search",
+                    note=f"{type(exc).__name__}: {str(exc)[:150]}")
+        budget.record_requests(activity.requests)
+        report["public_activity"] = {"requests": activity.requests, "errors": activity.errors,
+                                     "companies": sum(1 for pr in profiles if (pr["evidence"].get("public_activity") or {}).get("status") == "available")}
     retry: set[str] = set()
+    fp_retry: set[str] = set()
     checkpoint("job feed and public activity")
-    with ThreadPoolExecutor(a.plus_workers) as pool:
-        profiles = list(pool.map(plus, profiles))
+    with guarded("websites"):
+        with ThreadPoolExecutor(a.plus_workers) as pool:
+            profiles = list(pool.map(plus, profiles))
     checkpoint("websites")
-    if retry:
-        with ThreadPoolExecutor(4) as pool:
-            profiles = list(pool.map(lambda pr: retry_discovery(pr) if pr["organisation_number"] in retry else pr, profiles))
-    fp_retry = {pr["organisation_number"] for pr in profiles if needs_footprint_retry(pr)}
-    if fp_retry:
-        with ThreadPoolExecutor(4) as pool:
-            profiles = list(pool.map(lambda pr: retry_footprint(pr) if pr["organisation_number"] in fp_retry else pr, profiles))
+    with guarded("website retries"):
+        if retry:
+            with ThreadPoolExecutor(4) as pool:
+                profiles = list(pool.map(lambda pr: retry_discovery(pr) if pr["organisation_number"] in retry else pr, profiles))
+        fp_retry = {pr["organisation_number"] for pr in profiles if needs_footprint_retry(pr)}
+        if fp_retry:
+            with ThreadPoolExecutor(4) as pool:
+                profiles = list(pool.map(lambda pr: retry_footprint(pr) if pr["organisation_number"] in fp_retry else pr, profiles))
     if retry or fp_retry:
         checkpoint("website retries")
     report["discovery_retries"] = len(retry)
     report["footprint_retries"] = len(fp_retry)
-    for pr in profiles:
-        pr.setdefault("run_metrics", {})
-        paid = paid_search_calls(pr["organisation_number"])
-        if paid:  # only with a search key set; declared as third-party cost in the envelope and the report
-            pr["run_metrics"]["paid_search_calls"] = {k: v for k, v in paid.items() if not k.startswith("gemini_")}
-            pr["run_metrics"]["model_discovery_calls"] = {k: v for k, v in paid.items() if k.startswith("gemini_")}
-        if model_discovery_cost(pr["organisation_number"]):
-            pr["run_metrics"]["model_discovery_cost_usd"] = model_discovery_cost(pr["organisation_number"])
+    with guarded("paid-call accounting"):
+        for pr in profiles:
+            pr.setdefault("run_metrics", {})
+            paid = paid_search_calls(pr["organisation_number"])
+            if paid:  # only with a search key set; declared as third-party cost in the envelope and the report
+                pr["run_metrics"]["paid_search_calls"] = {k: v for k, v in paid.items() if not k.startswith("gemini_")}
+                pr["run_metrics"]["model_discovery_calls"] = {k: v for k, v in paid.items() if k.startswith("gemini_")}
+            if model_discovery_cost(pr["organisation_number"]):
+                pr["run_metrics"]["model_discovery_cost_usd"] = model_discovery_cost(pr["organisation_number"])
 
     # Optional (GEMINI_API_KEY): sentences quoted from verified websites, chosen by a model and checked verbatim.
     # Without a key this adds no module, no request and no cost.
@@ -346,42 +412,44 @@ def main() -> None:
             model_cost += cost
 
     if "site_description" in modules:
-        with ThreadPoolExecutor(4) as pool:
-            list(pool.map(describe, profiles))
-        report["site_description"] = {"model": site_description.model(), "cost_usd": round(model_cost, 6),
-                                      "described": sum(pr["evidence"]["site_description"]["status"] == "available" for pr in profiles)}
-    prefetch_pool.shutdown(wait=False, cancel_futures=True)  # copies not fetched yet are downloaded by the OCR step itself
-    configure_ocr(a.ocr_workers)
-    with ThreadPoolExecutor(a.ocr_workers) as pool:
-        for start in range(0, len(profiles), 100):  # the longest stage: save after every 100 companies
-            list(pool.map(workforce, profiles[start:start + 100]))
-            if start + 100 < len(profiles):
-                checkpoint(f"man-years for {start + 100} companies")
+        with guarded("site descriptions"):
+            with ThreadPoolExecutor(4) as pool:
+                list(pool.map(describe, profiles))
+            report["site_description"] = {"model": site_description.model(), "cost_usd": round(model_cost, 6),
+                                          "described": sum(pr["evidence"]["site_description"]["status"] == "available" for pr in profiles)}
+    with guarded("man-years"):
+        prefetch_pool.shutdown(wait=False, cancel_futures=True)  # copies not fetched yet are downloaded by the OCR step itself
+        configure_ocr(a.ocr_workers)
+        with ThreadPoolExecutor(a.ocr_workers) as pool:
+            for start in range(0, len(profiles), 100):  # the longest stage: save after every 100 companies
+                list(pool.map(workforce, profiles[start:start + 100]))
+                if start + 100 < len(profiles):
+                    checkpoint(f"man-years for {start + 100} companies")
     completed = utc_now()
-    envelopes = [terminal_envelope(pr, run_id=a.run_id, modules=modules, started_at=report["started_at"], completed_at=completed) for pr in profiles]
-    for e in envelopes:
-        e["changes"] = e["profile"].get("changes_since_previous", [])
-        contract_or_keep(e)
+    envelopes = build_envelopes(profiles, modules, completed, "source_error", "This stage did not complete in this run")
     validation = validate_envelopes(envelopes, a.expected_count)
-    plus_requests = sum(pr.get("run_metrics", {}).get("plus_requests", 0) + pr.get("run_metrics", {}).get("workforce_requests", 0) for pr in profiles)
-    report.update({"modules": modules, "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})
-    report["operations"]["requests"] += plus_requests + feed.requests
-    search_cost = sum(n * cost_per_call(prov) for pr in profiles for prov, n in (pr["run_metrics"].get("paid_search_calls") or {}).items())
-    search_cost += sum(pr["run_metrics"].get("model_discovery_cost_usd", 0.0) for pr in profiles)
-    gm_calls = sum(sum((pr["run_metrics"].get("model_discovery_calls") or {}).values()) for pr in profiles)
-    if gm_calls:
-        report["model_discovery"] = {"model": gemini_model(), "calls": gm_calls,
-                                     "modes": dict(Counter(m for pr in profiles for m in (pr["run_metrics"].get("model_discovery_calls") or {}))),
-                                     "cost_usd": round(sum(pr["run_metrics"].get("model_discovery_cost_usd", 0.0) for pr in profiles), 6)}
-    report["operations"]["third_party_cost_usd"] = round(model_cost + search_cost, 6)
-    if search_cost:
-        report["paid_search"] = {"calls": sum(sum((pr["run_metrics"].get("paid_search_calls") or {}).values()) for pr in profiles),
-                                 "cost_usd": round(search_cost, 6)}
-    report["operations"]["budget_exhausted"] = budget.is_exhausted(safety_margin_seconds=0, safety_margin_requests=0)
+    write_jsonl(env_path, envelopes)  # the graded file is on disk before any report arithmetic
+    with guarded("writing profiles"):
+        write_jsonl(profiles_path, profiles)
+    with guarded("run report"):
+        plus_requests = sum(pr.get("run_metrics", {}).get("plus_requests", 0) + pr.get("run_metrics", {}).get("workforce_requests", 0) for pr in profiles)
+        report.update({"modules": modules, "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})
+        report["operations"]["requests"] += plus_requests + feed.requests
+        search_cost = sum(n * cost_per_call(prov) for pr in profiles for prov, n in (pr["run_metrics"].get("paid_search_calls") or {}).items())
+        search_cost += sum(pr["run_metrics"].get("model_discovery_cost_usd", 0.0) for pr in profiles)
+        gm_calls = sum(sum((pr["run_metrics"].get("model_discovery_calls") or {}).values()) for pr in profiles)
+        if gm_calls:
+            report["model_discovery"] = {"model": gemini_model(), "calls": gm_calls,
+                                         "modes": dict(Counter(m for pr in profiles for m in (pr["run_metrics"].get("model_discovery_calls") or {}))),
+                                         "cost_usd": round(sum(pr["run_metrics"].get("model_discovery_cost_usd", 0.0) for pr in profiles), 6)}
+        report["operations"]["third_party_cost_usd"] = round(model_cost + search_cost, 6)
+        if search_cost:
+            report["paid_search"] = {"calls": sum(sum((pr["run_metrics"].get("paid_search_calls") or {}).values()) for pr in profiles),
+                                     "cost_usd": round(search_cost, 6)}
+        report["operations"]["budget_exhausted"] = budget.is_exhausted(safety_margin_seconds=0, safety_margin_requests=0)
 
-    write_jsonl(profiles_path, profiles)
-    write_jsonl(env_path, envelopes)
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with guarded("writing the run report"):
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
     try:  # profile viewer for people; never allowed to affect the graded envelopes or exit code
         sys.path.insert(0, str(ROOT / "scripts"))
         from build_site import build as build_site
@@ -397,7 +465,7 @@ def main() -> None:
         for m, v in e["modules"].items():
             states.setdefault(m, {}).setdefault(v["state"], 0)
             states[m][v["state"]] += 1
-    print(json.dumps({"validation": validation["passed"], "requests": report["operations"]["requests"], "module_states": states}, indent=1))
+    print(json.dumps({"validation": validation["passed"], "requests": report.get("operations", {}).get("requests"), "module_states": states}, indent=1))
     raise SystemExit(0 if validation["passed"] else 1)
 
 
