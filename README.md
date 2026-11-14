@@ -205,15 +205,20 @@ e.g. `regnskap[<record id>].resultatregnskapResultat.driftsresultat.driftsresult
   opencv-python-headless (Apache-2.0), beautifulsoup4 (MIT), lxml (BSD-3-Clause), trafilatura (Apache-2.0), extruct (BSD-3-Clause),
   tldextract (BSD-3-Clause), pydantic (MIT).
 - OCR uses half the CPU cores as workers (`--ocr-workers`), each with its own 2-thread engine; annual-account copies download during the
-  website stage. A built-in budget guard stops new work before 40 minutes and 1,900 requests per 100 companies (official limit 2,000)
-  and still emits every envelope.
-- Measured (smoke-100 `r14-smoke`, run on 13 November 2026 through the starter-kit command `scripts/run_competition_batch.py`, no keys,
-  12-core laptop): 100/100 envelopes, validation passed, 1,724 requests, 19 minutes, 0 failed claims, 0 uncited claims,
+  website stage. A built-in budget guard stops new work before 40 minutes and 1,900 requests per 100 companies (official limit 2,000;
+  a batch of N companies run as one command gets N/100 times that; set a fixed cap with `--max-runtime-seconds`) and still emits every envelope.
+- The output file always holds the best complete result so far: after the registry step, after the job-feed/public-activity stage, after
+  the website stage and after every 100 companies of the man-year stage, all envelopes are rewritten in the final format (written to a
+  temporary file and swapped in). A run stopped from outside at any time leaves a valid file with everything found up to then.
+- Works with or without the registry snapshot file (`--bulk`); empty snapshot cells are `not_available`, never zero.
+- Measured (smoke-100 `r15-smoke`, run on 14 November 2026 through the starter-kit command `scripts/run_competition_batch.py` with the
+  registry snapshot file (`--bulk`), no keys, 12-core laptop): 100/100 envelopes, validation passed, 1,573 requests, 35 minutes
+  (17 minutes in another run of the same command the same morning; the difference is network speed), 0 failed claims, 0 uncited claims,
   13 verified websites, man-years for 72 companies, dated Entity Register changes for 100 companies (914 items, change feed),
   dated public activity from TED/SkatteFUNN/GLEIF/DiBK for 8 companies.
   A second set of 100 other companies (`r11`, no keys): 1,744 requests, 26 minutes, valid, dated public activity for 9 companies.
   Limit per 100-company shard: 2,000 requests / 45 minutes / USD 10.
-- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r14-smoke`, no keys); the same viewer page is `docs/index.html`, served at https://24f2006988.github.io/fjordproof/.
+- 100-company smoke test: `smoke/smoke-envelopes.jsonl`, `smoke/smoke-report.json`, `smoke/site/index.html` (run `r15-smoke`, no keys); the same viewer page is `docs/index.html`, served at https://24f2006988.github.io/fjordproof/.
 
 ### Optional keys (all off by default; with no key: no request, no cost, identical output)
 If Builderr supplies a key for scoring, these steps switch on with no code change; each declares its cost per company in
