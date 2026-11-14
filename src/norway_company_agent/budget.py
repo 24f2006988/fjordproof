@@ -5,6 +5,16 @@ import time
 from typing import Any
 
 
+# Official limit: 45 minutes and 2,000 requests PER 100-company shard (Builderr, 9 Oct 2026). A batch of N companies run as one
+# command gets the same per-company allowance: 40 minutes per 100 companies (5 minutes in reserve). A flat 40 minutes would give
+# a 1,000-company batch about 2.4 seconds per company, so most companies would end with registry facts only.
+RUNTIME_SECONDS_PER_100 = 2400.0
+
+
+def default_runtime_seconds(expected_count: int) -> float:
+    return RUNTIME_SECONDS_PER_100 * max(1.0, expected_count / 100.0)
+
+
 class BudgetGuard:
     """Thread-safe time and request budget guard for batch runs.
 

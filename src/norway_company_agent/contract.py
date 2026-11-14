@@ -46,6 +46,20 @@ def _lit(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
+def _amount(value: Any) -> float | None:
+    """A number from a registry snapshot cell. Snapshot rows carry every column, empty when the company has no such value
+    (share capital for a sole proprietorship, an association, ...): empty or unreadable is None, never 0 and never an error."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(" ", "").replace(" ", "").replace(",", ".")
+    try:
+        return float(text) if text else None
+    except ValueError:
+        return None
+
+
 def _record_key(acc: dict[str, Any]) -> str:
     """Selector of one Regnskapsregisteret record: its id, else its period end."""
     rid = acc.get("record_id")
@@ -224,10 +238,11 @@ def to_contract(envelope: dict[str, Any]) -> dict[str, Any]:
     # page check could prove or reach the site (official_website below stays reserved for proven sites).
     declared_site = live_rec.get("website") or raw_rec.get("hjemmeside")
     scalar("registry_website", declared_site)
-    cap = live_rec.get("share_capital") or ({"amount": float(raw_rec["kapital.belop"]), "currency": raw_rec.get("kapital.valuta", "NOK"), "shares": raw_rec.get("kapital.antallAksjer")} if "kapital.belop" in raw_rec else None)
+    bulk_capital = _amount(raw_rec.get("kapital.belop"))
+    cap = live_rec.get("share_capital") or ({"amount": bulk_capital, "currency": raw_rec.get("kapital.valuta") or "NOK", "shares": raw_rec.get("kapital.antallAksjer") or None} if bulk_capital is not None else None)
     scalar("share_capital", cap, raw=live_rec.get("share_capital") or bulk_group("kapital"))
     scalar("incorporation_date", live_rec.get("incorporation_date") or raw_rec.get("stiftelsesdato"))
-    scalar("vat_registered", live_rec.get("vat_registered") if "vat_registered" in live_rec else (raw_rec.get("registrertIMvaregisteret") == "true" if "registrertIMvaregisteret" in raw_rec else None),
+    scalar("vat_registered", live_rec.get("vat_registered") if "vat_registered" in live_rec else (raw_rec.get("registrertIMvaregisteret") == "true" if raw_rec.get("registrertIMvaregisteret") in ("true", "false") else None),
            raw=live_rec["vat_registered"] if "vat_registered" in live_rec else raw_rec.get("registrertIMvaregisteret"))
     scalar("audit_exemption", live_rec.get("audit_exemption") or raw_rec.get("fravalgRevisjonBeslutningsDato"))
 

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from norway_company_agent.batch import profile_complete_for_modules, profiles_from_bulk, read_organisation_inputs, terminal_envelope, validate_envelopes  # noqa: E402
-from norway_company_agent.budget import BudgetGuard  # noqa: E402
+from norway_company_agent.budget import BudgetGuard, default_runtime_seconds  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.identity import apply_website_identity_gate  # noqa: E402
 from norway_company_agent.official import fetch_official_modules  # noqa: E402
@@ -40,7 +40,7 @@ def main() -> None:
     parser.add_argument("--checkpoint-every", type=int, default=25)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--modules", default="registry,accounting_obligation,registry_live,financials,roles,group,locations,website")
-    parser.add_argument("--max-runtime-seconds", type=float, default=2400.0, help="maximum runtime in seconds (default 2400 = 40m)")
+    parser.add_argument("--max-runtime-seconds", type=float, default=None, help="maximum runtime in seconds (default: 40 min per 100 companies)")
     parser.add_argument("--max-requests", type=int, default=None, help="maximum request limit")
     args = parser.parse_args()
 
@@ -60,7 +60,8 @@ def main() -> None:
     live_requests = registry_metadata.get("live_lookups", 0)
     operations = {"requests": live_requests, "bytes": 0, "latencies_ms": []}
     max_reqs = args.max_requests if args.max_requests is not None else max(1800, int(args.expected_count * 15))
-    budget = BudgetGuard(max_runtime_seconds=args.max_runtime_seconds, max_requests=max_reqs)
+    runtime = args.max_runtime_seconds if args.max_runtime_seconds is not None else default_runtime_seconds(args.expected_count)
+    budget = BudgetGuard(max_runtime_seconds=runtime, max_requests=max_reqs)
     budget.record_requests(live_requests)
 
     def enrich(profile: dict) -> tuple[dict, dict]:

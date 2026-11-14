@@ -7,6 +7,7 @@ The registry base step is scripts/run_base_batch.py; scripts/run_competition_bat
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import subprocess
@@ -20,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from norway_company_agent.batch import read_organisation_inputs, terminal_envelope, validate_envelopes  # noqa: E402
-from norway_company_agent.budget import BudgetGuard  # noqa: E402
+from norway_company_agent.budget import BudgetGuard, default_runtime_seconds  # noqa: E402
 from norway_company_agent.contract import to_contract  # noqa: E402
 from norway_company_agent.evidence import evidence, utc_now  # noqa: E402
 from norway_company_agent.footprint_plus import discover_website, extract_footprint, model_discovery_cost, paid_search_calls  # noqa: E402
@@ -39,8 +40,23 @@ PLUS_MODULES = {"external_footprint", "workforce", "nav_jobs", "public_activity"
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
+    # Written to a temporary file and swapped in: a reader (or a stop at the time limit) never sees a half-written file.
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n" for r in rows), encoding="utf-8")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text("".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n" for r in rows), encoding="utf-8")
+    temporary.replace(path)
+
+
+def contract_or_keep(envelope: dict) -> None:
+    """Output-contract form of one envelope. One company's unexpected data must never cost the whole batch its results:
+    on an error that company keeps its terminal envelope (states and profile) and the error is reported."""
+    try:
+        to_contract(envelope)
+    except Exception as exc:  # noqa: BLE001
+        print(f"contract form not built for {envelope.get('organisation_number')}: {type(exc).__name__}: {str(exc)[:160]}", file=sys.stderr)
+        envelope.setdefault("claims", [])
+        envelope.setdefault("evidence", [])
+        envelope.setdefault("errors", []).append({"module": "contract", "error": type(exc).__name__, "note": str(exc)[:160]})
 
 
 def material_changes(old: dict | None, new: dict) -> list[dict]:
@@ -72,7 +88,7 @@ def main() -> None:
     p.add_argument("--previous", help="previous envelopes JSONL (snapshot is preserved; changes are reported)")
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--plus-workers", type=int, default=24, help="threads for website discovery/footprint (many different hosts; Brreg is not hit here)")
-    p.add_argument("--max-runtime-seconds", type=float, default=2400.0, help="maximum wallclock runtime in seconds (default: 2400 = 40m)")
+    p.add_argument("--max-runtime-seconds", type=float, default=None, help="maximum wallclock runtime in seconds (default: 40 min per 100 companies)")
     p.add_argument("--max-requests", type=int, default=None, help="maximum outbound requests (default: batch scaled)")
     p.add_argument("--job-feed-days", type=int, default=60, help="days of the NAV job feed to read (active ads modified in this window)")
     # Half the cores as workers, each with its own 2-thread OCR engine: measured fastest on 12 cores (6 x 2: 77-84 s per 12 copies;
@@ -86,7 +102,8 @@ def main() -> None:
     base_modules = ",".join(m for m in MODULES.split(",") if m not in PLUS_MODULES)  # website discovery also runs in this script
     # Official limit: 2,000 requests per 100 companies. Keep 100 in reserve; the man-year step stops a further 100 earlier.
     max_reqs = a.max_requests if a.max_requests is not None else max(1900, int(a.expected_count * 19))
-    budget = BudgetGuard(max_runtime_seconds=a.max_runtime_seconds, max_requests=max_reqs)
+    runtime = a.max_runtime_seconds if a.max_runtime_seconds is not None else default_runtime_seconds(a.expected_count)
+    budget = BudgetGuard(max_runtime_seconds=runtime, max_requests=max_reqs)
     cmd = [sys.executable, str(ROOT / "scripts" / "run_base_batch.py"), "--organisations", a.organisations,
            "--profiles-output", str(profiles_path), "--output", str(env_path), "--report", str(report_path),
            "--run-id", a.run_id, "--expected-count", str(a.expected_count), "--workers", str(a.workers), "--modules", base_modules,
@@ -116,6 +133,33 @@ def main() -> None:
     previous = {}
     if a.previous and Path(a.previous).exists():
         previous = {e["organisation_number"]: e["profile"] for e in map(json.loads, Path(a.previous).read_text(encoding="utf-8").splitlines()) if e.get("profile")}
+
+    def checkpoint(stage: str) -> None:
+        """Save everything found so far to the output path, in the final format.
+
+        The registry step leaves registry-only envelopes at the output path and the full file used to be written only at the very
+        end, so a run stopped at an evaluator time limit kept registry facts only. Called between stages (no worker is changing
+        the profiles); works on a copy; a failure here never affects the run.
+        """
+        try:
+            now = utc_now()
+            snapshot = copy.deepcopy(profiles)
+            stage_modules = MODULES.split(",")
+            for pr in snapshot:
+                pr.setdefault("run_metrics", {})
+                for module in stage_modules:
+                    if module not in pr["evidence"]:
+                        pr["evidence"][module] = evidence(module, "budget_exhausted", "system_budget_guard", "https://builderr.ai",
+                                                          note=f"Not reached yet when this checkpoint was written (after {stage})")
+            partial = [terminal_envelope(pr, run_id=a.run_id, modules=stage_modules, started_at=report["started_at"], completed_at=now)
+                       for pr in snapshot]
+            for e in partial:
+                e["changes"] = e["profile"].get("changes_since_previous", [])
+                contract_or_keep(e)
+            if validate_envelopes(partial, a.expected_count)["passed"]:
+                write_jsonl(env_path, partial)
+        except Exception as exc:  # noqa: BLE001
+            print(f"checkpoint after {stage} not written: {type(exc).__name__}: {str(exc)[:120]}", file=sys.stderr)
 
     def plus(profile: dict) -> dict:
         extra = {"requests": 0, "bytes": 0}
@@ -258,8 +302,10 @@ def main() -> None:
     report["public_activity"] = {"requests": activity.requests, "errors": activity.errors,
                                  "companies": sum(pr["evidence"]["public_activity"]["status"] == "available" for pr in profiles)}
     retry: set[str] = set()
+    checkpoint("job feed and public activity")
     with ThreadPoolExecutor(a.plus_workers) as pool:
         profiles = list(pool.map(plus, profiles))
+    checkpoint("websites")
     if retry:
         with ThreadPoolExecutor(4) as pool:
             profiles = list(pool.map(lambda pr: retry_discovery(pr) if pr["organisation_number"] in retry else pr, profiles))
@@ -267,6 +313,8 @@ def main() -> None:
     if fp_retry:
         with ThreadPoolExecutor(4) as pool:
             profiles = list(pool.map(lambda pr: retry_footprint(pr) if pr["organisation_number"] in fp_retry else pr, profiles))
+    if retry or fp_retry:
+        checkpoint("website retries")
     report["discovery_retries"] = len(retry)
     report["footprint_retries"] = len(fp_retry)
     for pr in profiles:
@@ -305,12 +353,15 @@ def main() -> None:
     prefetch_pool.shutdown(wait=False, cancel_futures=True)  # copies not fetched yet are downloaded by the OCR step itself
     configure_ocr(a.ocr_workers)
     with ThreadPoolExecutor(a.ocr_workers) as pool:
-        list(pool.map(workforce, profiles))
+        for start in range(0, len(profiles), 100):  # the longest stage: save after every 100 companies
+            list(pool.map(workforce, profiles[start:start + 100]))
+            if start + 100 < len(profiles):
+                checkpoint(f"man-years for {start + 100} companies")
     completed = utc_now()
     envelopes = [terminal_envelope(pr, run_id=a.run_id, modules=modules, started_at=report["started_at"], completed_at=completed) for pr in profiles]
     for e in envelopes:
         e["changes"] = e["profile"].get("changes_since_previous", [])
-        to_contract(e)
+        contract_or_keep(e)
     validation = validate_envelopes(envelopes, a.expected_count)
     plus_requests = sum(pr.get("run_metrics", {}).get("plus_requests", 0) + pr.get("run_metrics", {}).get("workforce_requests", 0) for pr in profiles)
     report.update({"modules": modules, "completed_at": completed, "emitted_envelopes": len(envelopes), "validation": validation})

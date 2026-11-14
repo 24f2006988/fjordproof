@@ -1,0 +1,658 @@
+{
+ "organisation_number": "991983848",
+ "name": "SAMEIET FLADBYSETER J3",
+ "legal_form": "ESEK",
+ "employees": null,
+ "bankrupt": false,
+ "liquidating": false,
+ "municipality": "OSLO",
+ "municipality_number": "0301",
+ "industry_code": "97.001",
+ "industry_label": "Aktiviteter i borettslag og boligsameier",
+ "website": "www.solibo.no",
+ "latest_submitted_accounts": "2025",
+ "evidence": {
+  "registry": {
+   "field": "registry",
+   "status": "available",
+   "source_type": "official_registry_bulk",
+   "source_class": "official_registry_bulk",
+   "source_url": "https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv",
+   "retrieved_at": "2026-11-13T16:54:36.467608Z",
+   "value": {
+    "organisasjonsnummer": "991983848",
+    "navn": "SAMEIET FLADBYSETER J3",
+    "organisasjonsform.kode": "ESEK",
+    "organisasjonsform.beskrivelse": "Eierseksjonssameie",
+    "naeringskode1.kode": "97.001",
+    "naeringskode1.beskrivelse": "Aktiviteter i borettslag og boligsameier",
+    "naeringskode2.kode": "",
+    "naeringskode2.beskrivelse": "",
+    "naeringskode3.kode": "",
+    "naeringskode3.beskrivelse": "",
+    "hjelpeenhetskode.kode": "",
+    "hjelpeenhetskode.beskrivelse": "",
+    "harRegistrertAntallAnsatte": "false",
+    "antallAnsatte": "",
+    "registreringsdatoAntallAnsatteEnhetsregisteret": "",
+    "registreringsdatoantallansatteNAVAaregisteret": "",
+    "hjemmeside": "www.solibo.no",
+    "epostadresse": "",
+    "telefon": "",
+    "mobil": "",
+    "postadresse.adresse": "c/o Solibo AS\nDronning Eufemias gate 16",
+    "postadresse.poststed": "OSLO",
+    "postadresse.postnummer": "0191",
+    "postadresse.kommune": "OSLO",
+    "postadresse.kommunenummer": "0301",
+    "postadresse.land": "Norge",
+    "postadresse.landkode": "NO",
+    "forretningsadresse.adresse": "Dronning Eufemias gate 16",
+    "forretningsadresse.poststed": "OSLO",
+    "forretningsadresse.postnummer": "0191",
+    "forretningsadresse.kommune": "OSLO",
+    "forretningsadresse.kommunenummer": "0301",
+    "forretningsadresse.land": "Norge",
+    "forretningsadresse.landkode": "NO",
+    "institusjonellSektorkode.kode": "",
+    "institusjonellSektorkode.beskrivelse": "",
+    "sisteInnsendteAarsregnskap": "2025",
+    "registreringsdatoenhetsregisteret": "2008-01-19",
+    "stiftelsesdato": "1993-10-05",
+    "registrertIMvaRegisteret": "false",
+    "registreringsdatoMerverdiavgiftsregisteret": "",
+    "registreringsdatoMerverdiavgiftsregisteretEnhetsregisteret": "",
+    "frivilligMvaRegistrertBeskrivelser": "",
+    "registreringsdatoFrivilligMerverdiavgiftsregisteret": "",
+    "registrertIFrivillighetsregisteret": "false",
+    "registreringsdatoFrivillighetsregisteret": "",
+    "registrertIForetaksregisteret": "true",
+    "registreringsdatoForetaksregisteret": "2008-01-19",
+    "registrertIStiftelsesregisteret": "false",
+    "registrertIPartiregisteret": "false",
+    "registreringsdatoPartiregisteret": "",
+    "konkurs": "false",
+    "konkursdato": "",
+    "underAvvikling": "false",
+    "underAvviklingDato": "",
+    "underTvangsavviklingEllerTvangsopplosning": "false",
+    "tvangsopplostPgaManglendeDagligLederDato": "",
+    "tvangsopplostPgaManglendeRevisorDato": "",
+    "tvangsopplostPgaManglendeRegnskapDato": "",
+    "tvangsopplostPgaMangelfulltStyreDato": "",
+    "tvangsavvikletPgaManglendeSlettingDato": "",
+    "overordnetEnhet": "",
+    "maalform": "Bokmål",
+    "vedtektsdato": "2007-04-17",
+    "vedtektsfestetFormaal": "Ivareta sameiernes fellesintersser med drift og administrasjon av gnr. 43, bnr. 191, i Ullensaker kommune.",
+    "aktivitet": "Eierseksjonssameie.",
+    "paategninger": "false",
+    "underUtenlandskInsolvensbehandlingDato": "",
+    "underRekonstruksjonsforhandlingDato": "",
+    "fravalgRevisjonDato": "",
+    "fravalgRevisjonBeslutningsDato": "",
+    "erIKonsern": "false",
+    "kapital.belop": "",
+    "kapital.antallAksjer": "",
+    "kapital.type": "",
+    "kapital.bundet": "",
+    "kapital.valuta": "",
+    "kapital.innbetalt": "",
+    "kapital.fulltInnbetalt": "",
+    "kapital.innfortDato": "",
+    "registreringsnummerIHjemlandet": "",
+    "utenlandskRegisterNavn": "",
+    "utenlandskRegisterAdresse.land": "",
+    "utenlandskRegisterAdresse.poststed": "",
+    "utenlandskRegisterAdresse.adresse": "",
+    "underlagtLovgivningLand": "",
+    "underlagtLovgivningLandKode": "",
+    "foretaksformIHjemlandet.kode": "",
+    "foretaksformIHjemlandet.beskrivelse": "",
+    "foretaksformIHjemlandet.beskrivelseBokmaal": ""
+   },
+   "as_of": null,
+   "note": null,
+   "content_sha256": "8483831efe73d873460e4c6765c98f46a1937a59b763c074ea32a6d2e657bc70",
+   "source_row_key": "991983848",
+   "effective_at": null
+  },
+  "accounting_obligation": {
+   "field": "accounting_obligation",
+   "status": "available",
+   "source_type": "official_rule_interpretation",
+   "source_class": "official_rule_interpretation",
+   "source_url": "https://www.brreg.no/en/submission-of-annual-accounts/reporting-obligations-to-the-register-of-company-accounts/who-has-an-accounting-obligation/",
+   "retrieved_at": "2026-11-13T16:54:57.216702Z",
+   "value": {
+    "classification": "filing_observed",
+    "legal_form": "ESEK",
+    "latest_submitted_accounts": "2025",
+    "reason": "The registry snapshot reports a latest submitted annual-account year.",
+    "ruleset_version": "brreg_accounting_obligation_rules_2024-08-09_v1"
+   },
+   "as_of": "2024-08-09",
+   "note": null,
+   "content_sha256": "b94e22c6da7667d1ae10db3dcb20f1b279634a1ce07b21111fc0f56758b3b6fb",
+   "source_row_key": "991983848",
+   "effective_at": null
+  },
+  "registry_live": {
+   "field": "registry_live",
+   "status": "available",
+   "source_type": "official_registry_live",
+   "source_class": "official_registry_live",
+   "source_url": "https://data.brreg.no/enhetsregisteret/api/enheter/991983848",
+   "retrieved_at": "2026-11-13T16:57:08.232238Z",
+   "value": {
+    "organisation_number": "991983848",
+    "name": "SAMEIET FLADBYSETER J3",
+    "legal_form": "ESEK",
+    "employees": null,
+    "bankrupt": false,
+    "liquidating": false,
+    "website": "www.solibo.no",
+    "industry": {
+     "beskrivelse": "Aktiviteter i borettslag og boligsameier",
+     "kode": "97.001"
+    },
+    "business_address": {
+     "adresse": [
+      "Dronning Eufemias gate 16"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0191",
+     "poststed": "OSLO"
+    },
+    "postal_address": {
+     "adresse": [
+      "c/o Solibo AS",
+      "Dronning Eufemias gate 16"
+     ],
+     "kommune": "OSLO",
+     "kommunenummer": "0301",
+     "land": "Norge",
+     "landkode": "NO",
+     "postnummer": "0191",
+     "poststed": "OSLO"
+    },
+    "latest_submitted_accounts": "2025",
+    "email": null,
+    "phone": null,
+    "share_capital": null,
+    "incorporation_date": "1993-10-05",
+    "vat_registered": false,
+    "audit_exemption": null,
+    "registered_activity": "Eierseksjonssameie.",
+    "statutory_purpose": "Ivareta sameiernes fellesintersser med drift og administrasjon av gnr. 43, bnr. 191, i Ullensaker kommune.",
+    "sector": null,
+    "registered_at": "2008-01-19",
+    "business_register_date": "2008-01-19",
+    "vat_register_date": null,
+    "forced_dissolution": false,
+    "part_of_group": false,
+    "statutes_date": "2007-04-17",
+    "written_standard": "Bokmål",
+    "mobile": null,
+    "former_names": [],
+    "secondary_industries": []
+   },
+   "as_of": null,
+   "note": null,
+   "content_sha256": "152734afdafa74353940836f8bf22017515e3c8fcccbf72e4f9c04025aa8e2a3",
+   "source_row_key": null,
+   "effective_at": null
+  },
+  "financials": {
+   "field": "financials",
+   "status": "available",
+   "source_type": "official_annual_accounts",
+   "source_class": "official_annual_accounts",
+   "source_url": "https://data.brreg.no/regnskapsregisteret/regnskap/991983848",
+   "retrieved_at": "2026-11-13T16:57:09.470010Z",
+   "value": {
+    "records": [
+     {
+      "record_id": 5089773,
+      "account_type": "SELSKAP",
+      "period": {
+       "fraDato": "2023-01-01",
+       "tilDato": "2023-12-31"
+      },
+      "currency": "NOK",
+      "revenue": 657408.0,
+      "operating_result": 21646.0,
+      "wage_costs": 39080.0,
+      "profit_before_tax": -78206.0,
+      "annual_result": -78206.0,
+      "assets": 328321.0,
+      "equity": -1167146.0,
+      "debt": 1495466.0
+     },
+     {
+      "record_id": 6242401,
+      "account_type": "SELSKAP",
+      "period": {
+       "fraDato": "2024-01-01",
+       "tilDato": "2024-12-31"
+      },
+      "currency": "NOK",
+      "revenue": 833144.0,
+      "operating_result": 142797.0,
+      "wage_costs": 55625.0,
+      "profit_before_tax": 43034.0,
+      "annual_result": 43034.0,
+      "assets": 360938.0,
+      "equity": -1124111.0,
+      "debt": 1485049.0
+     },
+     {
+      "record_id": 7161759,
+      "account_type": "SELSKAP",
+      "period": {
+       "fraDato": "2025-01-01",
+       "tilDato": "2025-12-31"
+      },
+      "currency": "NOK",
+      "revenue": 1025484.0,
+      "operating_result": 435362.0,
+      "wage_costs": 0.0,
+      "profit_before_tax": 344011.0,
+      "annual_result": 344011.0,
+      "assets": 663356.0,
+      "equity": -780101.0,
+      "debt": 1443456.0
+     }
+    ]
+   },
+   "as_of": null,
+   "note": null,
+   "content_sha256": "dbbe52a64e85fb4d3ce4a327b0806db5b79692fff63aa9b9869dc9dcf36d2274",
+   "source_row_key": null,
+   "effective_at": null
+  },
+  "financial_history": {
+   "field": "financial_history",
+   "status": "available",
+   "source_type": "official_annual_account_copies",
+   "source_class": "official_annual_account_copies",
+   "source_url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/aar",
+   "retrieved_at": "2026-11-13T16:57:20.002213Z",
+   "value": {
+    "years": [
+     "2011",
+     "2012",
+     "2013",
+     "2014",
+     "2015",
+     "2016",
+     "2017",
+     "2018",
+     "2019",
+     "2020",
+     "2021",
+     "2022",
+     "2023",
+     "2024",
+     "2025"
+    ],
+    "pdfs": [
+     {
+      "year": "2025",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2025"
+     },
+     {
+      "year": "2024",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2024"
+     },
+     {
+      "year": "2023",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2023"
+     },
+     {
+      "year": "2022",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2022"
+     },
+     {
+      "year": "2021",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2021"
+     },
+     {
+      "year": "2020",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2020"
+     },
+     {
+      "year": "2019",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2019"
+     },
+     {
+      "year": "2018",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2018"
+     },
+     {
+      "year": "2017",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2017"
+     },
+     {
+      "year": "2016",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2016"
+     },
+     {
+      "year": "2015",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2015"
+     },
+     {
+      "year": "2014",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2014"
+     },
+     {
+      "year": "2013",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2013"
+     },
+     {
+      "year": "2012",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2012"
+     },
+     {
+      "year": "2011",
+      "url": "https://data.brreg.no/regnskapsregisteret/regnskap/aarsregnskap/kopi/991983848/2011"
+     }
+    ]
+   },
+   "as_of": null,
+   "note": null,
+   "content_sha256": "b7bcd20d8a4607bc9ca49fbdfebf5e51cb31e39858edb985dc98a82e8d2b7cd1",
+   "source_row_key": null,
+   "effective_at": null
+  },
+  "roles": {
+   "field": "roles",
+   "status": "available",
+   "source_type": "official_roles",
+   "source_class": "official_roles",
+   "source_url": "https://data.brreg.no/enhetsregisteret/api/enheter/991983848/roller",
+   "retrieved_at": "2026-11-13T16:57:21.263242Z",
+   "value": {
+    "roles": [
+     {
+      "name": [
+       "SOLIBO AS"
+      ],
+      "organisation_number": "920800572",
+      "role_code": "FFØR",
+      "role": "Forretningsfører",
+      "group_code": "FFØR",
+      "group": "Forretningsfører",
+      "last_changed": "2020-12-04",
+      "inactive": false
+     },
+     {
+      "name": "Kurt Gøran Adriansen",
+      "organisation_number": null,
+      "role_code": "LEDE",
+      "role": "Styrets leder",
+      "group_code": "STYR",
+      "group": "Styre",
+      "last_changed": "2025-08-29",
+      "inactive": false
+     },
+     {
+      "name": "Bente Rønningen",
+      "organisation_number": null,
+      "role_code": "MEDL",
+      "role": "Styremedlem",
+      "group_code": "STYR",
+      "group": "Styre",
+      "last_changed": "2025-08-29",
+      "inactive": false
+     },
+     {
+      "name": "Kjærsti Kristiansen",
+      "organisation_number": null,
+      "role_code": "MEDL",
+      "role": "Styremedlem",
+      "group_code": "STYR",
+      "group": "Styre",
+      "last_changed": "2025-08-29",
+      "inactive": false
+     },
+     {
+      "name": "Aida Muminovic",
+      "organisation_number": null,
+      "role_code": "VARA",
+      "role": "Varamedlem",
+      "group_code": "STYR",
+      "group": "Styre",
+      "last_changed": "2025-08-29",
+      "inactive": false
+     },
+     {
+      "name": "Berit Helene Espe",
+      "organisation_number": null,
+      "role_code": "VARA",
+      "role": "Varamedlem",
+      "group_code": "STYR",
+      "group": "Styre",
+      "last_changed": "2025-08-29",
+      "inactive": false
+     },
+     {
+      "name": [
+       "BDO AS"
+      ],
+      "organisation_number": "993606650",
+      "role_code": "REVI",
+      "role": "Revisor",
+      "group_code": "REVI",
+      "group": "Revisor",
+      "last_changed": "2012-10-09",
+      "inactive": false
+     },
+     {
+      "name": [
+       "SOLIBO AS"
+      ],
+      "organisation_number": "920800572",
+      "role_code": "REGN",
+      "role": "Regnskapsfører",
+      "group_code": "REGN",
+      "group": "Regnskapsfører",
+      "last_changed": "2021-08-27",
+      "inactive": false
+     }
+    ]
+   },
+   "as_of": null,
+   "note": null,
+   "content_sha256": "b08bab31d74f1c63cdf098d4d14d6bdaed822ea59ad7b6b0b37f170615ad931a",
+   "source_row_key": null,
+   "effective_at": null
+  },
+  "group": {
+   "field": "group",
+   "status": "not_found",
+   "source_type": "official_group_structure",
+   "source_class": "official_group_structure",
+   "source_url": "https://data.brreg.no/enhetsregisteret/api/konsernstruktur/991983848",
+   "retrieved_at": "2026-11-13T16:57:22.428635Z",
+   "value": null,
+   "as_of": null,
+   "note": "HTTP 404",
+   "content_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "source_row_key": null,
+   "effective_at": null
+  },
+  "locations": {
+   "field": "locations",
+   "status": "available",
+   "source_type": "official_subunits",
+   "source_class": "official_subunits",
+   "source_url": "https://data.brreg.no/enhetsregisteret/api/underenheter?overordnetEnhet=991983848&size=1000",
+   "retrieved_at": "2026-11-13T16:57:23.629863Z",
+   "value": {
+    "locations": [
+     {
+      "organisation_number": "915525814",
+      "name": "SAMEIET FLADBYSETER J3",
+      "address": {
+       "adresse": [
+        "Dronning Eufemias gate 16"
+       ],
+       "kommune": "OSLO",
+       "kommunenummer": "0301",
+       "land": "Norge",
+       "landkode": "NO",
+       "postnummer": "0191",
+       "poststed": "OSLO"
+      },
+      "industry": {
+       "beskrivelse": "Aktiviteter i borettslag og boligsameier",
+       "kode": "97.001"
+      },
+      "employees": null,
+      "email": null,
+      "phone": null
+     }
+    ]
+   },
+   "as_of": null,
+   "note": null,
+   "content_sha256": "163c1caf256e1b9856a6d7084f66477b751d6d3ca33ff0443665abe3292b1ca7",
+   "source_row_key": null,
+   "effective_at": null
+  },
+  "website": {
+   "field": "website",
+   "status": "available",
+   "source_type": "registry_linked_company_website",
+   "source_class": "registry_linked_company_website",
+   "source_url": "https://www.solibo.no/",
+   "retrieved_at": "2026-11-13T16:57:27.311226Z",
+   "value": {
+    "requested_url": "https://www.solibo.no/",
+    "final_url": "https://www.solibo.no/",
+    "registered_domain": "solibo.no",
+    "title": "Solibo",
+    "description": "Solibo gjør det enklere å være styreleder i borettslag og sameier. Vi tilbyr rimelig forretningsførsel, samt en rekke andre tjenester til boligselskap.",
+    "main_text_excerpt": "Mer tid til livet mellom styremøtene\nVi hjelper boligselskaper med økonomi, drift og rådgivning – slik at styret kan bruke tiden der den gir mest verdi.\nSlik gjør vi styrehverdagen enklere\nØkonomi under kontroll\nVi håndterer regnskap, innkreving, rapportering og lovpålagte oppgaver slik at styret får bedre oversikt og mindre administrasjon.\nEffektiv samhandling\nVi samler styrearbeid, beboerkommunikasjon og fakturahåndtering i én digital løsning. Enkelt å bruke, effektivt i hverdagen og integrert med relevante tjenester.\nBedre drift over tid\nVi er totalleverandør innen forvaltning av boligselskap. Blant annet tilbyr vi tjenester som vedlikeholdsplanlegging, kurs, bistand i tyngre styresaker og HMS.\nSolibo i sosiale medier\nKontakt oss\nVurderer dere å bytte forretningsfører, eller har dere spørsmål om våre tjenester? Vi hjelper gjerne.",
+    "identity_text_excerpt": "Kontakt oss i dag Ta kontakt Ta kontakt Om Solibo Om oss Referanser Karriere Snarveier Til forsiden Kontakt Nyhetsbrev Solibo AS Autorisert Regnskapsførerselskap NO 920 800 572 MVA Postadresse Oslo: Dronning Eufemias Gate 16, 0191 Oslo Fredrikstad: Jens Wilhelmsens gate 3, 1671 Kråkerøy Kontakt 21 08 05 25 kundeservice@solibo.no",
+    "social_links": [],
+    "structured_organisations": [],
+    "content_sha256": "7b252899b9857c4905d2477858fd698e2c8b7366423034a9bddc9934b8f415b0",
+    "extraction_state": "static_complete",
+    "pages": [
+     {
+      "url": "https://www.solibo.no/",
+      "title": "Solibo",
+      "main_text_excerpt": "Mer tid til livet mellom styremøtene\nVi hjelper boligselskaper med økonomi, drift og rådgivning – slik at styret kan bruke tiden der den gir mest verdi.\nSlik gjør vi styrehverdagen enklere\nØkonomi under kontroll\nVi håndterer regnskap, innkreving, rapportering og lovpålagte oppgaver slik at styret får bedre oversikt og mindre administrasjon.\nEffektiv samhandling\nVi samler styrearbeid, beboerkommunikasjon og fakturahåndtering i én digital løsning. Enkelt å bruke, effektivt i hverdagen og integrert med relevante tjenester.\nBedre drift over tid\nVi er totalleverandør innen forvaltning av boligselskap. Blant annet tilbyr vi tjenester som vedlikeholdsplanlegging, kurs, bistand i tyngre styresaker og HMS.\nSolibo i sosiale medier\nKontakt oss\nVurderer dere å bytte forretningsfører, eller har dere spørsmål om våre tjenester? Vi hjelper gjerne.",
+      "identity_text_excerpt": "Kontakt oss i dag Ta kontakt Ta kontakt Om Solibo Om oss Referanser Karriere Snarveier Til forsiden Kontakt Nyhetsbrev Solibo AS Autorisert Regnskapsførerselskap NO 920 800 572 MVA Postadresse Oslo: Dronning Eufemias Gate 16, 0191 Oslo Fredrikstad: Jens Wilhelmsens gate 3, 1671 Kråkerøy Kontakt 21 08 05 25 kundeservice@solibo.no",
+      "content_sha256": "7b252899b9857c4905d2477858fd698e2c8b7366423034a9bddc9934b8f415b0"
+     },
+     {
+      "url": "https://www.solibo.no/om-oss",
+      "title": "Om oss — Solibo",
+      "main_text_excerpt": "Vi tror en tradisjonell bransje fortjener moderne løsninger\nBli bedre kjent med menneskene, tankene og historien bak Solibo\nOm Solibo\nSolibo er en one-stop-shop for alle borettslag og sameier i Norge. Solibo driver med eiendomsforvaltning og rådgivning, og satser spesielt på IT og utvikling av nye digitale tjenester som forenkler både styrets og beboernes hverdag. Solibo ble stiftet i 2018, og er dermed en relativt ny utfordrer i et marked som trenger å bli utfordret.\nVi har et langsiktig perspektiv, med en målsetting om å være den foretrukne samarbeidspartneren for alle borettslag og sameier. Vi bygger derfor systematisk kunnskap, selskapskultur og egne systemer for å realisere denne målsettingen. Solibo skal være en pådriver for innovasjon og den foretrukne arbeidsplassen innen vårt segment.\nDet er i dag over 1.000 selskap i Norge som forvalter ett eller flere boligselskap. Solibo har på rekordtid vokst til å bli en stor aktør i Norge, og vår målsetting er å være den største boligforvalteren i Norge i løpet av få år.\nVisjon\n«Solibo forenkler styrets hverdag og øker boligselskapets verdier».\nMisjon\nSolibo skal sørge for at alle borettslag og sameier blir godt ivaretatt, uavhengig av hvilken kompetanse som befinner seg i boligselskapets styre. Gjennom vårt arbeid vil boligselskapene oppleve økonomisk forutsigbarhet og trygg forvaltning av bygg og verdier. Vi forenkler styrets hverdag, slik at dere kan fokusere på å skape trivsel blant beboerne. Beboerne vil føle at deres hjem blir et stadig bedre sted å bo.\nMøt ledergruppen\nVår reise\n- \n      \n      \n      \n      \n        Selskapet ble etablert2018\n- \n      \n      \n      \n      \n        Blant de 100 største forvalterne2019\n- \n      \n      \n      \n      \n        Flyttet kontor til Dronning Eufemias gate 16 i Bjørvika2020\n- \n      \n      \n      \n      \n        Blant de 50 største forvalterne2020\n- \n      \n      \n      \n      \n        Blant de 30 største forvalterne2021\n- \n      \n      \n      \n      \n        Lanserte Solibo Home2022\n- \n      \n      \n      \n      \n        Blant de 10 største forvalterne2023\n- \n      \n      \n      \n      \n        Lanserte eget fakturasystem2023\n- \n      \n      \n      \n      \n        Blant de seks største forvalterne2025\n- \n      \n      \n      \n      \n        Lanserte beboerapp2025",
+      "identity_text_excerpt": "Kontakt oss i dag Ta kontakt Ta kontakt Om Solibo Om oss Referanser Karriere Snarveier Til forsiden Kontakt Nyhetsbrev Solibo AS Autorisert Regnskapsførerselskap NO 920 800 572 MVA Postadresse Oslo: Dronning Eufemias Gate 16, 0191 Oslo Fredrikstad: Jens Wilhelmsens gate 3, 1671 Kråkerøy Kontakt 21 08 05 25 kundeservice@solibo.no",
+      "content_sha256": "49944bef258543df4eb019899195aa013e3ac394973754c7c75b46d9fdd57918"
+     },
+     {
+      "url": "https://www.solibo.no/kontakt",
+      "title": "Kontakt oss — Solibo",
+      "main_text_excerpt": "Kontakt oss\nHar du spørsmål eller ønsker en uforpliktende prat? Ring oss på 21 08 05 25, eller fyll ut kontaktskjemaet under.\nEr du eiendomsmegler og skal selge en bolig i et av våre boligselskap? Ta kontakt på meglerkontakt@solibo.no",
+      "identity_text_excerpt": "Kontakt oss i dag Ta kontakt Ta kontakt Om Solibo Om oss Referanser Karriere Snarveier Til forsiden Kontakt Nyhetsbrev Solibo AS Autorisert Regnskapsførerselskap NO 920 800 572 MVA Postadresse Oslo: Dronning Eufemias Gate 16, 0191 Oslo Fredrikstad: Jens Wilhelmsens gate 3, 1671 Kråkerøy Kontakt 21 08 05 25 kundeservice@solibo.no",
+      "content_sha256": "0c0c8f3980060dfd574ee97f16756958c1e367667ac44aaa27f105fd3d754148"
+     },
+     {
+      "url": "https://www.solibo.no/nyheter/2024/2/16/solibo-og-ecoguard-teamer-opp-for-gi-borettslag-og-sameier-ekstreme-kostnadskutt",
+      "title": "Solibo og EcoGuard teamer opp for å gi borettslag og sameier ekstreme kostnadskutt — Solibo",
+      "main_text_excerpt": "Solibo og EcoGuard går sammen om å hel- automatisere avregning og fakturering av vann og energi for borettslag og boligsameier i et marked preget av høye kostnader. For større sameier og borettslag utgjør dette en besparelse på 200.000 kroner pr år, for noen til og med mer.\nMed denne nylanseringen blir EcoGuard og Solibo de første i markedet til å hel- automatisere prosessen ut mot beboerne i boligselskaper. Avregning av vann, fjernvarme og el-billading har frem til nå vært manuelle og kostbare prosesser for borettslag og sameier. De fleste borettslag og sameier har kun avregning en gang pr år. Dette har EcoGuard og Solibo gått sammen om å løse. Ved å integrere EcoGuard sin teknologi i Solibo sin boligplattform, Solibo Home, får beboerne fakturaer basert på sitt faktiske forbruk knyttet til for eksempel vann, oppvarming og elbillading, målt på en månedlig basis, akkurat som man gjør med strøm. Dette gir kundene et forhold til sitt eget forbruk og forutsigbarhet på hva som kommer på neste regning.\n- Vår visjon er å lede borettslag inn i en fremtid der presis måling og fakturering av vann og varme skaper, ikke bare effektive, men også en bærekraftig og individuell opplevelse av ressursbruk – fordi hver dråpe og hver varmegrad teller, sier Henning Iversen, Daglig leder EcoGuard Norge.\nEn etterspurt tjeneste\n- Vi opplever allerede stor etterspørsel fra kunder og potensielle kunder som ønsker å benytte seg av denne løsningen, sier Magnus Babsvik, daglig leder i Solibo.\nMarkedet har sett seg lei på tungvinte og dyre manuelle avregningsprosesser som et resultat av akonto beløpene som må avregnes, dette utgjør store summer i løpet av et år for boligselskapene. Løsningen vi sammen lanserer er både tids- og kostnadsbesparende for kunder og oss som forvalter, fortsetter Babsvik.\nÅpent for alle\nDe fleste energimålere har teknologien i seg, også fra andre leverandører enn EcoGuard, men de lar ikke kundene bruke dataen til å spare kostnader gjennom åpne API-er. Den gode nyheten er at EcoGuard kan ta over avlesning fra de aller fleste målere, også de som de ikke er installert av EcoGuard selv. EcoGuard tar seg av overgangen og dersom boligselskapet ikke skulle ha målere er dette noe de bistår med å installere.\nMed dette får man det beste fra to verdener, det siste av teknologi på avlesning av energi i tillegg til Solibo som har bevist seg å være en av markeds ledende på forvaltningstjenester for boligselskap.\nFor mer informasjon om hvordan deres boligselskap kan dra nytte av EcoGuard sine produkter, vennligst ta kontakt direkte med EcoGuard på telefon 40 00 00 39 eller per mail på kontakt@ecoguard.no",
+      "identity_text_excerpt": "Kontakt oss i dag Ta kontakt Ta kontakt Om Solibo Om oss Referanser Karriere Snarveier Til forsiden Kontakt Nyhetsbrev Solibo AS Autorisert Regnskapsførerselskap NO 920 800 572 MVA Postadresse Oslo: Dronning Eufemias Gate 16, 0191 Oslo Fredrikstad: Jens Wilhelmsens gate 3, 1671 Kråkerøy Kontakt 21 08 05 25 kundeservice@solibo.no",
+      "content_sha256": "3a620f128c13ebfb22753294cf40cde6485b9bc9ad1b97d508f6a8271e61f9a3"
+     },
+     {
+      "url": "https://www.solibo.no/nyheter/2024/3/4/solibo-styrker-teamet-dw26x",
+      "title": "Solibo styrker teamet  — Solibo",
+      "main_text_excerpt": "Solibo fortsetter reisen som utfordrer og får Sigmund Hagehaugen inn i rollen som CFO\nSigmund har erfaring fra APCOA og Aquatiq-systemet, og kommer sist fra Hjemmelegene i stillingen som Head of Financing and Controlling. Han bringer verdifull erfaring inn i Solibo-teamet fra scale-ups og etablerte selskaper, og vil spille en viktig rolle i tiden fremover.\n- Solibo markerer seg i bransjen ved å utfordre det etablerte og åpner dører for nye muligheter gjennom nytekning og teknologi. Jeg er imponert over hva Magnus og det dedikerte Solibo-teamet har fått til så langt og ser frem til å være med på den spennende reisen videre. Solibo er kommet for å bli, sier Sigmund.\nRigger for videre vekst\nSolibo har vokst kraftig på kort tid, og har ambisjoner om å bli den største boligforvalteren i Norge innen få år. I inneværende år har Solibo passert 400 borettslag og sameier på kundelisten, med vel over 15 000 boliger under forvaltning. Solibo er dermed den største aktøren i markedet som ikke er et boligbyggelag. Ambisjonene for 2024 legger listen høyt både med tanke på nye kunder inn og nylanseringer på teknologifronten.\n- Selv om vi har en kraftig vekst vil alltid fokuset på kvalitet være i senter. Solibo hjelper norske borettslag og sameier med å ta smartere avgjørelser som bidrar til et bedre bomiljø og verdiøkning. Vi leverer løsninger som sikrer planmessig vedlikehold, forvaltning og rådgivning, sier Magnus Babsvik, daglig leder i Solibo.\nLes hele saken i nyhetsrommet vårt her.",
+      "identity_text_excerpt": "Kontakt oss i dag Ta kontakt Ta kontakt Om Solibo Om oss Referanser Karriere Snarveier Til forsiden Kontakt Nyhetsbrev Solibo AS Autorisert Regnskapsførerselskap NO 920 800 572 MVA Postadresse Oslo: Dronning Eufemias Gate 16, 0191 Oslo Fredrikstad: Jens Wilhelmsens gate 3, 1671 Kråkerøy Kontakt 21 08 05 25 kundeservice@solibo.no",
+      "content_sha256": "ba078c45281bdaaf79c2707a38392287d6af398f323529e6562d5eff2b8b67c9"
+     }
+    ],
+    "crawl_errors": [],
+    "identity_assessment": {
+     "status": "related_or_uncertain",
+     "score": 0.3,
+     "publishable": false,
+     "legal_name_tokens": [
+      "sameiet",
+      "fladbyseter",
+      "j3"
+     ],
+     "matched_tokens": [],
+     "reasons": [
+      "registry-linked URL lacks strong exact-entity identity evidence"
+     ],
+     "method": "deterministic_name_org_evidence_v2"
+    },
+    "discovered_social_links": [
+     {
+      "platform": "facebook",
+      "url": "https://facebook.com/soliboas"
+     },
+     {
+      "platform": "linkedin",
+      "url": "https://linkedin.com/company/soliboas"
+     }
+    ],
+    "social_link_assessments": [
+     {
+      "platform": "facebook",
+      "url": "https://facebook.com/soliboas",
+      "identity_score": 0.9,
+      "publishable": true,
+      "matched_tokens": [
+       "solibo"
+      ],
+      "reason": "social handle carries the verified website's domain name (solibo) and is linked from that site",
+      "method": "deterministic_social_handle_identity_v1"
+     },
+     {
+      "platform": "linkedin",
+      "url": "https://linkedin.com/company/soliboas",
+      "identity_score": 0.9,
+      "publishable": true,
+      "matched_tokens": [
+       "solibo"
+      ],
+      "reason": "social handle carries the verified website's domain name (solibo) and is linked from that site",
+      "method": "deterministic_social_handle_identity_v1"
+     }
+    ]
+   },
+   "as_of": null,
+   "note": "Company-controlled claim layer; not an official registry fact",
+   "content_sha256": "7b252899b9857c4905d2477858fd698e2c8b7366423034a9bddc9934b8f415b0",
+   "source_row_key": null,
+   "effective_at": null
+  }
+ },
+ "run_metrics": {
+  "requests": 12,
+  "bytes": 2268375,
+  "latencies_ms": [
+   1312,
+   1233,
+   1219,
+   1265,
+   1155,
+   1203,
+   516,
+   390,
+   750,
+   375,
+   327
+  ]
+ }
+}
